@@ -1,7 +1,10 @@
 services:
   discoteca:
+    # La imagen se construye siempre desde el código del repositorio; no existe en Docker Hub.
+    # «pull_policy: build» evita que «Pull and redeploy» intente descargarla (y falle).
     build: .
     image: discoteca:latest
+    pull_policy: build
     container_name: discoteca
     restart: unless-stopped
     ports:

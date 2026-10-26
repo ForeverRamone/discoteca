@@ -37,6 +37,8 @@ Abre `http://IP-DEL-SERVIDOR:3000`.
 
 La base de datos se guarda en el volumen `discoteca-data`, que sobrevive a actualizaciones y reinicios del contenedor.
 
+Para actualizar a una versión nueva: **Stacks › discoteca › Pull and redeploy**. Portainer descarga el código de GitHub y vuelve a construir la imagen (no hay imagen publicada en Docker Hub; por eso el `docker-compose.yml` lleva `pull_policy: build`).
+
 ## Variables de entorno
 
 | Variable | Por defecto | Descripción |

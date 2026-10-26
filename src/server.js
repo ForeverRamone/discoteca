@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -44,7 +46,21 @@ app.use((req, res, next) => {
 app.use('/api/backup/restore', auth.requireAuth, backup.restoreRouter);
 app.use(express.json({ limit: '15mb' })); // los Excel llegan en base64
 
-app.get('/api/health', (req, res) => res.json({ ok: true }));
+// Huella del código de la interfaz: si cambia (nueva versión desplegada), la app abierta se recarga sola.
+function hashDir(dir, hash = crypto.createHash('sha1')) {
+  for (const name of fs.readdirSync(dir).sort()) {
+    const full = path.join(dir, name);
+    if (fs.statSync(full).isDirectory()) hashDir(full, hash);
+    else hash.update(name).update(fs.readFileSync(full));
+  }
+  return hash;
+}
+const appVersion = hashDir(publicDir).digest('hex').slice(0, 12);
+
+app.get('/api/health', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ ok: true, version: appVersion });
+});
 app.use('/api/auth', auth.router);
 app.use('/api/imports', auth.requireAuth, importer.router);
 app.use('/api/backup', auth.requireAuth, backup.exportRouter);

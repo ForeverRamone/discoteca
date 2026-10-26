@@ -1,9 +1,10 @@
 import { api, setUnauthorizedHandler } from './api.js';
-import { h, icon, showError } from './dom.js';
+import { h, icon, showError, toast } from './dom.js';
 import { state, bus, loadTree } from './store.js';
 import { renderSidebar, highlightSidebar } from './sidebar.js';
 import { folderView, collectionView, libraryView, searchView, settingsView } from './views.js';
 import { importView, importJobView } from './imports.js';
+import { setupPullToRefresh, setupResumeRefresh } from './refresh.js';
 
 const $ = (id) => document.getElementById(id);
 const main = $('view');
@@ -100,8 +101,41 @@ async function startApp() {
   await route();
 }
 
+// ---------- Actualizar ----------
+
+let appVersion = null;
+async function serverVersion() {
+  try {
+    return (await (await fetch('/api/health', { cache: 'no-store' })).json()).version ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Vuelve a pedir colecciones y la pantalla actual. Si hay una versión nueva de la app, recarga entera.
+async function refreshAll({ quiet = false } = {}) {
+  if ($('shell').hidden) return;
+  const version = await serverVersion();
+  if (version && appVersion && version !== appVersion) {
+    location.reload();
+    return;
+  }
+  try {
+    await loadTree();
+    renderSidebar(sidebar);
+    await route({ keepScroll: true });
+    if (!quiet) toast('Actualizado');
+  } catch (err) {
+    if (!quiet) showError(err);
+  }
+}
+
+setupPullToRefresh(() => refreshAll());
+setupResumeRefresh(refreshAll);
+
 async function boot() {
   setUnauthorizedHandler(showLogin);
+  serverVersion().then((v) => { appVersion = v; });
   try {
     const status = await api('/auth/status');
     state.country = status.country;

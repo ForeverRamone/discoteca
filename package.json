@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "description": "Organiza álbumes completos de Apple Music en colecciones y carpetas. Autoalojada.",
   "private": true,
+  "license": "MIT",
+  "repository": "github:ForeverRamone/discoteca",
   "type": "module",
   "engines": {
     "node": ">=22.13"

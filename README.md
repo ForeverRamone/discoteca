@@ -20,7 +20,7 @@ App web autoalojada para organizar **álbumes completos** de Apple Music en cole
 ## Instalación con Docker Compose
 
 ```bash
-git clone https://github.com/TU_USUARIO/discoteca.git
+git clone https://github.com/ForeverRamone/discoteca.git
 cd discoteca
 cp .env.example .env      # y edita APP_PASSWORD
 docker compose up -d --build
@@ -148,3 +148,7 @@ Cada álbum se guarda con su **ID de catálogo de Apple Music**, igual que cada 
 - **Datos de Apple:** iTunes Search API (`/search` y `/lookup`). Los metadatos de cada álbum guardado se almacenan localmente y las respuestas se cachean para respetar los límites de Apple.
 - Si Apple ha sustituido un álbum por otro con un ID nuevo, la app sigue la redirección de `music.apple.com` para encontrar el actual.
 - La búsqueda por texto de Apple no siempre encuentra todos los discos de un artista. Pulsa el nombre del artista en los resultados para ver su discografía completa.
+
+## Licencia
+
+[MIT](LICENSE).

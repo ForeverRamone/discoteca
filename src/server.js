@@ -10,6 +10,8 @@ import { createLibrary } from './library.js';
 import { createRecordClub } from './recordclub.js';
 import { createImporter } from './importer.js';
 import { createBackup } from './backup.js';
+import { createBandcamp } from './bandcamp.js';
+import { createMusicBrainz } from './musicbrainz.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -18,8 +20,10 @@ const itunes = createItunes(db, { country: config.country, perMinute: config.itu
 const auth = createAuth(config);
 const library = createLibrary(db);
 const recordClub = createRecordClub(db, { delayMs: config.recordClubDelayMs });
+const bandcamp = createBandcamp(db);
+const musicbrainz = createMusicBrainz(db);
 const backup = createBackup({ db, dataDir: config.dataDir, country: config.country });
-const importer = createImporter({ db, itunes, recordClub, library, autoSyncHours: config.autoSyncHours });
+const importer = createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, library, autoSyncHours: config.autoSyncHours });
 
 const app = express();
 app.disable('x-powered-by');
@@ -30,7 +34,7 @@ app.use((req, res, next) => {
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader(
     'Content-Security-Policy',
-    "default-src 'self'; img-src 'self' data: https://*.mzstatic.com; style-src 'self'; " +
+    "default-src 'self'; img-src 'self' data: https://*.mzstatic.com https://*.bcbits.com; style-src 'self'; " +
       "script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
   );
   next();
@@ -44,7 +48,7 @@ app.get('/api/health', (req, res) => res.json({ ok: true }));
 app.use('/api/auth', auth.router);
 app.use('/api/imports', auth.requireAuth, importer.router);
 app.use('/api/backup', auth.requireAuth, backup.exportRouter);
-app.use('/api', auth.requireAuth, createApi(db, itunes, library));
+app.use('/api', auth.requireAuth, createApi(db, itunes, library, bandcamp));
 app.use('/api', (req, res) => res.status(404).json({ error: 'Ruta no encontrada.' }));
 
 // Librería para arrastrar y soltar, servida desde node_modules (no se copia al repositorio).

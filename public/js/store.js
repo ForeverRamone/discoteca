@@ -91,20 +91,32 @@ export function appleWebUrl(album) {
   return url && /^https:\/\/(music|itunes)\.apple\.com\//.test(url) ? url : `https://music.apple.com/${state.country}/album/${Number(album.id)}`;
 }
 
-// "app": music://… abre directamente la app Música (iPhone y Mac).
-// "web": https://music.apple.com/… (enlace universal; el sistema decide si abre la app o la web).
+export const isBandcamp = (album) => album?.provider === 'bandcamp';
+export const serviceName = (album) => (isBandcamp(album) ? 'Bandcamp' : 'Apple Music');
+
+// Enlace para abrir el álbum:
+//   Bandcamp: su página (en iPhone se abre en Safari; la app de Bandcamp no abre álbumes desde enlaces).
+//   Apple Music, modo "app": music://… abre directamente la app Música (iPhone y Mac).
+//   Apple Music, modo "web": https://music.apple.com/… (el sistema decide si abre la app o la web).
 export function appleLink(album) {
+  if (isBandcamp(album)) {
+    return /^https:\/\/[a-z0-9-]+\.bandcamp\.com\//i.test(album.externalUrl || '') ? album.externalUrl : '#';
+  }
   const url = appleWebUrl(album);
   return prefs.get('linkMode', 'app') === 'app' ? url.replace(/^https:\/\//, 'music://') : url;
 }
 
-export function linkTarget() {
-  return prefs.get('linkMode', 'app') === 'web' ? { target: '_blank', rel: 'noopener' } : {};
+export function linkTarget(album) {
+  return isBandcamp(album) || prefs.get('linkMode', 'app') === 'web' ? { target: '_blank', rel: 'noopener' } : {};
 }
 
 // Las portadas de Apple admiten cualquier tamaño cambiando el sufijo "100x100bb.jpg".
 export function artwork(url, size) {
   if (!url) return null;
+  // Bandcamp: _2 = 350 px, _16 = 700 px, _10 = 1200 px.
+  if (/bcbits\.com\/img\//.test(url)) {
+    return url.replace(/_\d+\.(jpg|png)$/i, `_${size <= 350 ? 2 : size <= 700 ? 16 : 10}.jpg`);
+  }
   return url.replace(/\/\d+x\d+[a-z]*\.(jpg|jpeg|png|webp)$/i, `/${size}x${size}bb.jpg`);
 }
 

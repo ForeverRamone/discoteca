@@ -55,9 +55,14 @@ function albumBrowser({ albums, sortMode, sortOptions, onSort, onReorder, viewKe
     oninput: debounce((e) => { filterText = normalize(e.target.value.trim()); draw(); }, 150),
   });
   const extraFilter = filterable === 'library'
-    ? h('label', { class: 'check' }, h('input', { type: 'checkbox', onchange: (e) => { onlyLoose = e.target.checked; draw(); } }), 'Solo sin colección')
+    ? [
+      select([['all', 'Todos los orígenes'], ['apple', 'Apple Music'], ['bandcamp', 'Bandcamp']], 'all',
+        (v) => { provider = v; draw(); }, 'Origen'),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', onchange: (e) => { onlyLoose = e.target.checked; draw(); } }), 'Solo sin colección'),
+    ]
     : null;
   let onlyLoose = false;
+  let provider = 'all';
 
   const slider = sizeSlider((size) => grid?.style.setProperty('--cover', `${size}px`));
 
@@ -65,6 +70,7 @@ function albumBrowser({ albums, sortMode, sortOptions, onSort, onReorder, viewKe
     let list = albums;
     if (filterText) list = list.filter((a) => normalize(`${a.title} ${a.artist} ${a.genre ?? ''} ${a.year ?? ''}`).includes(filterText));
     if (onlyLoose) list = list.filter((a) => !a.collectionCount);
+    if (provider !== 'all') list = list.filter((a) => (a.provider || 'apple') === provider);
     list = sortAlbums(list, sort);
     count.textContent = `${list.length} álbum${list.length === 1 ? '' : 'es'}${list.length !== albums.length ? ` de ${albums.length}` : ''}`;
     slider.hidden = mode !== 'grid';
@@ -280,7 +286,7 @@ export async function searchView(params) {
   };
 
   const input = h('input', {
-    type: 'search', value: q, placeholder: 'Artista, álbum o enlace de Apple Music', 'aria-label': 'Buscar',
+    type: 'search', value: q, placeholder: 'Artista, álbum o enlace de Apple Music o Bandcamp', 'aria-label': 'Buscar',
     autocomplete: 'off', enterkeyhint: 'search',
   });
   const form = h('form', {
@@ -370,7 +376,7 @@ export async function searchView(params) {
 
     const meta = [album.year, album.trackCount && `${album.trackCount} pistas`, album.genre].filter(Boolean).join(' · ');
     return h('div', { class: 'result' },
-      h('a', { class: 'result-cover', href: appleLink(album), ...linkTarget(), title: 'Abrir en Apple Music' }, coverImg(album, 88)),
+      h('a', { class: 'result-cover', href: appleLink(album), ...linkTarget(album), title: `Abrir en ${album.provider === 'bandcamp' ? 'Bandcamp' : 'Apple Music'}` }, coverImg(album, 88)),
       h('div', { class: 'result-text' },
         h('span', { class: 'row-title' }, album.title),
         album.artistId && !artistId
@@ -406,7 +412,8 @@ export async function searchView(params) {
     draw();
   } else {
     results.append(h('div', { class: 'empty' },
-      h('p', { class: 'muted' }, 'Escribe un artista o un álbum, o pega un enlace de Apple Music (en la app Música: Compartir › Copiar enlace).')));
+      h('p', { class: 'muted' }, 'Escribe un artista o un álbum, o pega un enlace de Apple Music (en la app Música: Compartir › Copiar enlace).'),
+      h('p', { class: 'muted small' }, 'Si un disco no está en Apple Music, pega el enlace de su página de Bandcamp (https://artista.bandcamp.com/album/…).')));
     setTimeout(() => input.focus(), 50);
   }
   return { title: 'Buscar', node };

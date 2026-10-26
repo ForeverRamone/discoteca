@@ -1,14 +1,21 @@
 import { api } from './api.js';
 import { h, icon, openDialog, dialogHeader, promptText, confirmDialog, actionSheet, toast, showError } from './dom.js';
 import {
-  state, prefs, collator, changed, appleLink, appleWebUrl, linkTarget, artwork, normalize,
+  state, prefs, collator, changed, appleLink, appleWebUrl, linkTarget, artwork, normalize, isBandcamp, serviceName,
   folderById, collectionById, childFolders, folderPath, descendantFolderIds, folderStats,
 } from './store.js';
 
 // ---------- Portadas y álbumes ----------
 
+// Etiqueta sobre la portada para los discos que no son de Apple Music.
+export const providerBadge = (album) => isBandcamp(album) && h('span', { class: 'provider-badge', title: 'Disco de Bandcamp' }, 'Bandcamp');
+
 export function coverImg(album, size = 160) {
-  if (!album.artworkUrl) return h('div', { class: 'cover-ph' }, icon('disc'));
+  if (!album.artworkUrl) return h('div', { class: 'cover-ph' }, icon('disc'), providerBadge(album));
+  return h('span', { class: 'cover-wrap' }, coverImgOnly(album, size), providerBadge(album));
+}
+
+function coverImgOnly(album, size) {
   return h('img', {
     src: artwork(album.artworkUrl, 300),
     srcset: `${artwork(album.artworkUrl, 300)} 300w, ${artwork(album.artworkUrl, 600)} 600w, ${artwork(album.artworkUrl, 1000)} 1000w`,
@@ -25,7 +32,7 @@ const subtitle = (a) => [a.artist, a.year].filter(Boolean).join(' · ');
 function coverTap(album, ctx, child, cls = 'cover') {
   if (ctx.editing) return h('div', { class: cls }, child); // en modo reordenar no se abre nada
   if (prefs.get('coverTap', 'open') === 'open') {
-    return h('a', { class: cls, href: appleLink(album), ...linkTarget(), title: `Abrir «${album.title}» en Apple Music` }, child);
+    return h('a', { class: cls, href: appleLink(album), ...linkTarget(album), title: `Abrir «${album.title}» en ${serviceName(album)}` }, child);
   }
   return h('button', { class: cls, type: 'button', title: album.title, onclick: () => albumDetails(album, ctx) }, child);
 }
@@ -48,7 +55,7 @@ function albumRow(album, ctx, index) {
       h('span', { class: 'row-title' }, album.title),
       h('span', { class: 'row-sub' }, album.artist)),
     h('span', { class: 'row-year' }, album.year ?? ''),
-    h('a', { class: 'icon-btn small', href: appleLink(album), ...linkTarget(), 'aria-label': 'Abrir en Apple Music' }, icon('play')),
+    h('a', { class: 'icon-btn small', href: appleLink(album), ...linkTarget(album), 'aria-label': `Abrir en ${serviceName(album)}` }, icon(isBandcamp(album) ? 'external' : 'play')),
     h('button', { class: 'icon-btn small', type: 'button', 'aria-label': 'Más opciones', onclick: () => albumDetails(album, ctx) }, icon('more')));
 }
 
@@ -78,12 +85,13 @@ export async function albumDetails(album, ctx = {}) {
     h('div', { class: 'album-detail' },
       dialogHeader('Álbum', close),
       h('div', { class: 'dlg-body' },
-        h('a', { class: 'detail-cover', href: appleLink(album), ...linkTarget() }, coverImg(album, 600)),
+        h('a', { class: 'detail-cover', href: appleLink(album), ...linkTarget(album) }, coverImg(album, 600)),
         h('h3', { class: 'detail-title' }, album.title),
         h('p', { class: 'detail-artist' }, album.artist),
         h('p', { class: 'muted small' },
           [album.year, album.genre, album.trackCount && `${album.trackCount} pistas`].filter(Boolean).join(' · ')),
-        h('a', { class: 'btn primary block', href: appleLink(album), ...linkTarget() }, icon('play'), 'Abrir en Apple Music'),
+        h('a', { class: 'btn primary block', href: appleLink(album), ...linkTarget(album) }, icon(isBandcamp(album) ? 'external' : 'play'), `Abrir en ${serviceName(album)}`),
+        isBandcamp(album) && h('p', { class: 'muted small center' }, 'Este disco no está en Apple Music: se abre su página de Bandcamp.'),
         h('div', { class: 'chips' },
           collectionIds.length
             ? collectionIds.map((id) => collectionById(id)).filter(Boolean).map((c) =>

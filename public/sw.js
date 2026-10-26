@@ -1,6 +1,6 @@
 // Service worker: guarda la interfaz para que la app abra rápido y funcione sin conexión
 // (mostrando un aviso). Los datos (/api) nunca se guardan aquí: siempre van al servidor.
-const VERSION = 'discoteca-v4';
+const VERSION = 'discoteca-v5';
 const SHELL = [
   '/',
   '/index.html',

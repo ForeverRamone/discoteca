@@ -13,6 +13,8 @@ export function albumFromRow(row) {
     trackCount: row.track_count,
     artworkUrl: row.artwork_url,
     appleUrl: row.apple_url,
+    provider: row.provider || 'apple',
+    externalUrl: row.external_url ?? null,
     explicit: Boolean(row.explicit),
     savedAt: row.created_at,
   };
@@ -30,15 +32,16 @@ export function createLibrary(db) {
     album: db.prepare('SELECT * FROM albums WHERE id = ?'),
     upsertAlbum: db.prepare(`
       INSERT INTO albums (id, title, artist, artist_id, year, release_date, genre, track_count,
-                          artwork_url, apple_url, explicit, copyright, country)
+                          artwork_url, apple_url, explicit, copyright, country, provider, external_url)
       VALUES (:id, :title, :artist, :artistId, :year, :releaseDate, :genre, :trackCount,
-              :artworkUrl, :appleUrl, :explicit, :copyright, :country)
+              :artworkUrl, :appleUrl, :explicit, :copyright, :country, :provider, :externalUrl)
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title, artist = excluded.artist, artist_id = excluded.artist_id,
         year = excluded.year, release_date = excluded.release_date, genre = excluded.genre,
         track_count = excluded.track_count, artwork_url = excluded.artwork_url,
         apple_url = excluded.apple_url, explicit = excluded.explicit,
         copyright = excluded.copyright, country = excluded.country,
+        provider = excluded.provider, external_url = excluded.external_url,
         updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')`),
     maxPosition: db.prepare('SELECT COALESCE(MAX(position), -1) AS m FROM collection_albums WHERE collection_id = ?'),
     addToCollection: db.prepare(`
@@ -63,6 +66,8 @@ export function createLibrary(db) {
       explicit: album.explicit ? 1 : 0,
       copyright: album.copyright ?? null,
       country: album.country ?? null,
+      provider: album.provider === 'bandcamp' ? 'bandcamp' : 'apple',
+      externalUrl: album.externalUrl ?? null,
     });
   }
 

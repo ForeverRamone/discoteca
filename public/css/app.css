@@ -531,3 +531,20 @@ details summary { cursor: pointer; }
 .editing .cover, .editing .row-cover { outline: 2px dashed color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 2px; }
 .drag-ghost { opacity: 0.35; }
 .drag-chosen .cover, .drag-chosen .row-cover { outline: 2px solid var(--accent); }
+
+/* ---------- Bandcamp ---------- */
+.cover-wrap { position: relative; display: block; width: 100%; height: 100%; }
+.cover-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cover-ph { position: relative; }
+.provider-badge {
+  position: absolute; left: 6px; bottom: 6px;
+  padding: 1px 7px; border-radius: 999px;
+  background: #1da0c3; color: #fff;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.02em; line-height: 1.6;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 35%); pointer-events: none;
+}
+.row-cover .provider-badge, .result-cover.small .provider-badge { left: 2px; bottom: 2px; padding: 0 4px; font-size: 8px; }
+.candidate .cover-wrap { aspect-ratio: 1; height: auto; margin-bottom: 4px; }
+.candidate .cover-wrap img { border-radius: 6px; margin: 0; }
+.dlg-actions.wrap { flex-wrap: wrap; }
+.center { text-align: center; }

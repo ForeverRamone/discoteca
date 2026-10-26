@@ -6,10 +6,20 @@ import { transaction } from './db.js';
 import { HttpError } from './errors.js';
 import { parseListUrl, listUrl } from './recordclub.js';
 import { parseUpload } from './parsers.js';
-import { findMatch, memoryKeys } from './matcher.js';
+import { findMatch, memoryKeys, scoreCandidate } from './matcher.js';
 
 const CHUNK = 20;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// ID de álbum: positivo (Apple Music) o negativo (Bandcamp).
+function toAlbumId(value) {
+  const n = Number(value);
+  if (!Number.isSafeInteger(n) || n === 0) throw new HttpError(400, 'Identificador de álbum no válido.');
+  return n;
+}
+
+// Bandcamp solo sustituye a Apple Music cuando Apple no tiene nada parecido.
+const APPLE_WEAK = 0.6;
 
 function toId(value) {
   const n = Number(value);
@@ -17,7 +27,7 @@ function toId(value) {
   return n;
 }
 
-export function createImporter({ db, itunes, recordClub, library, autoSyncHours = 0 }) {
+export function createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, library, autoSyncHours = 0 }) {
   const q = {
     job: db.prepare('SELECT * FROM import_jobs WHERE id = ?'),
     jobs: db.prepare(`
@@ -53,7 +63,8 @@ export function createImporter({ db, itunes, recordClub, library, autoSyncHours 
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
     items: db.prepare(`
       SELECT i.*, a.id AS a_id, a.title AS a_title, a.artist AS a_artist, a.year AS a_year, a.genre AS a_genre,
-             a.track_count AS a_track_count, a.artwork_url AS a_artwork_url, a.apple_url AS a_apple_url
+             a.track_count AS a_track_count, a.artwork_url AS a_artwork_url, a.apple_url AS a_apple_url,
+             a.provider AS a_provider, a.external_url AS a_external_url
       FROM import_items i LEFT JOIN albums a ON a.id = i.album_id
       WHERE i.job_id = ? ORDER BY i.position, i.id`),
     item: db.prepare('SELECT * FROM import_items WHERE id = ? AND job_id = ?'),
@@ -135,6 +146,7 @@ export function createImporter({ db, itunes, recordClub, library, autoSyncHours 
         ? {
           id: row.a_id, title: row.a_title, artist: row.a_artist, year: row.a_year, genre: row.a_genre,
           trackCount: row.a_track_count, artworkUrl: row.a_artwork_url, appleUrl: row.a_apple_url,
+          provider: row.a_provider || 'apple', externalUrl: row.a_external_url,
         }
         : null,
       candidates: row.candidates ? JSON.parse(row.candidates) : [],
@@ -302,23 +314,21 @@ export function createImporter({ db, itunes, recordClub, library, autoSyncHours 
       const wantIds = new Set();
       for (const item of batch) {
         const m = recall(item, job.source_type);
-        if (m?.status === 'not_found') {
-          q.updateItem.run('not_found', 'memory', null, null, null, item.id);
-          continue;
-        }
-        const w = { item, memoryId: m?.apple_id ?? null, hintId: null };
-        if (w.memoryId) wantIds.add(w.memoryId);
+        const w = { item, memoryId: m?.apple_id ?? null, hintId: null, bandcampUrl: null, notInApple: m?.status === 'not_found' };
+        if (w.memoryId > 0) wantIds.add(w.memoryId);
         work.push(w);
       }
 
-      // 2. Enlaces de Apple que trae Record Club
+      // 2. Enlaces que trae Record Club (Apple Music y Bandcamp)
       if (job.source_type === 'recordclub') {
         for (const w of work) {
           if (w.memoryId || !w.item.source_uri) continue;
           try {
-            w.hintId = await recordClub.appleHint(w.item.source_uri);
+            const links = await recordClub.releaseLinks(w.item.source_uri);
+            w.hintId = w.notInApple ? null : links.appleId;
+            w.bandcampUrl = links.bandcampUrl;
           } catch {
-            w.hintId = null; // seguimos con la búsqueda
+            // seguimos con la búsqueda
           }
           if (w.hintId) wantIds.add(w.hintId);
         }
@@ -329,7 +339,7 @@ export function createImporter({ db, itunes, recordClub, library, autoSyncHours 
       const found = toLookup.length ? await itunes.lookupAlbums(toLookup, { interactive: false }) : new Map();
       const albumFor = (aid) => library.getAlbum(aid) || found.get(aid) || null;
       for (const w of work) {
-        if (w.hintId && !albumFor(w.hintId)) {
+        if (w.hintId > 0 && !albumFor(w.hintId)) {
           const moved = await itunes.resolveMovedId(w.hintId);
           await sleep(300);
           w.hintId = moved;
@@ -348,11 +358,32 @@ export function createImporter({ db, itunes, recordClub, library, autoSyncHours 
           applyMatch(job, w.item, { status: 'matched', method: 'memory', album: remembered, score: 1 });
           continue;
         }
-        const res = await findMatch(
-          { artist: w.item.artist, title: w.item.title, year: w.item.year, kind: w.item.kind },
-          itunes,
-          { hintAlbum: w.hintId ? albumFor(w.hintId) : null },
-        );
+        const source = { artist: w.item.artist, title: w.item.title, year: w.item.year, kind: w.item.kind };
+
+        // Ya sabías que no está en Apple Music: solo queda probar Bandcamp.
+        if (w.notInApple) {
+          const bc = await findBandcamp(w.item, w.bandcampUrl);
+          if (bc?.verified) {
+            applyMatch(job, w.item, { status: 'matched', method: 'bandcamp', album: bc.album, score: bc.candidate.score, candidates: [bc.candidate] });
+            remember(w.item, job.source_type, bc.album.id, 'auto');
+          } else {
+            q.updateItem.run('not_found', 'memory', null, null, bc ? JSON.stringify([bc.candidate]) : null, w.item.id);
+          }
+          continue;
+        }
+
+        let res = await findMatch(source, itunes, { hintAlbum: w.hintId ? albumFor(w.hintId) : null });
+        // 5. Si Apple no lo tiene con seguridad, Bandcamp.
+        if (res.status !== 'matched') {
+          const bc = await findBandcamp(w.item, w.bandcampUrl);
+          if (bc) {
+            const appleWeak = !res.candidates.length || res.candidates[0].score < APPLE_WEAK;
+            const candidates = [bc.candidate, ...res.candidates].sort((a, b) => b.score - a.score).slice(0, 6);
+            res = bc.verified && appleWeak
+              ? { status: 'matched', method: 'bandcamp', album: bc.album, score: bc.candidate.score, candidates }
+              : { ...res, candidates };
+          }
+        }
         applyMatch(job, w.item, res);
         if (res.status === 'matched') remember(w.item, job.source_type, res.album.id, 'auto');
       }
@@ -364,12 +395,45 @@ export function createImporter({ db, itunes, recordClub, library, autoSyncHours 
     setStatus(id, 'done', parts.join(' · ') || null);
   }
 
+  // Enlace de Bandcamp del disco: el de Record Club o, si no hay, los de MusicBrainz.
+  // Nunca se usa el buscador de Bandcamp. Devuelve el álbum y si título y artista coinciden.
+  async function findBandcamp(item, knownUrl) {
+    if (!bandcamp) return null;
+    const urls = knownUrl ? [knownUrl] : [];
+    if (!urls.length && musicbrainz) {
+      try {
+        const mbid = item.mbid || (await musicbrainz.findReleaseGroup(item.artist, item.title));
+        if (mbid) urls.push(...(await musicbrainz.bandcampLinks(mbid)));
+      } catch {
+        // MusicBrainz no disponible: seguimos sin Bandcamp
+      }
+    }
+    let best = null;
+    for (const url of urls.slice(0, 3)) {
+      try {
+        const album = await bandcamp.fetchAlbum(url);
+        if (!album) continue;
+        const s = scoreCandidate({ artist: item.artist, title: item.title, year: item.year, kind: item.kind }, album);
+        const found = {
+          album,
+          verified: s.titleSim >= 0.85 && s.artistSim >= 0.7,
+          candidate: { ...album, score: Math.round(Math.min(1, s.score) * 100) / 100 },
+        };
+        if (!best || found.candidate.score > best.candidate.score) best = found;
+        if (found.verified) break;
+      } catch {
+        // página no disponible: probamos la siguiente
+      }
+    }
+    return best;
+  }
+
   // Al arrancar, reanuda lo que se quedó a medias.
   for (const { id } of q.unfinishedJobs.all()) enqueue(id);
 
   // ---------- Acciones del usuario ----------
 
-  async function resolveItem(jobId, itemId, { appleId, notFound }) {
+  async function resolveItem(jobId, itemId, { appleId, notFound, bandcampUrl }) {
     const job = q.job.get(jobId);
     if (!job) throw new HttpError(404, 'La importación no existe.');
     const item = q.item.get(itemId, jobId);
@@ -384,10 +448,16 @@ export function createImporter({ db, itunes, recordClub, library, autoSyncHours 
       return;
     }
 
-    const id = toId(appleId);
-    const fromCandidates = item.candidates ? JSON.parse(item.candidates).find((c) => c.id === id) : null;
-    const album = fromCandidates || library.getAlbum(id) || (await itunes.resolveAlbum(id));
-    if (!album) throw new HttpError(404, 'Ese álbum no está en la tienda de Apple Music.');
+    let album;
+    if (bandcampUrl) {
+      album = await bandcamp.fetchAlbum(bandcampUrl);
+      if (!album) throw new HttpError(404, 'Esa página de Bandcamp no existe o ya no está disponible.');
+    } else {
+      const id = toAlbumId(appleId);
+      const fromCandidates = item.candidates ? JSON.parse(item.candidates).find((c) => c.id === id) : null;
+      album = fromCandidates || library.getAlbum(id) || (id > 0 ? await itunes.resolveAlbum(id) : bandcamp?.recentAlbum(id));
+      if (!album) throw new HttpError(404, id > 0 ? 'Ese álbum no está en la tienda de Apple Music.' : 'No encuentro ese álbum de Bandcamp.');
+    }
     transaction(db, () => {
       if (item.album_id !== album.id) detach(job, item);
       library.saveAlbum(album);
@@ -578,8 +648,8 @@ export function createImporter({ db, itunes, recordClub, library, autoSyncHours 
 
   r.post('/:id/items/:itemId', async (req, res) => {
     const job = requireJob(req);
-    const { appleId, notFound } = req.body || {};
-    await resolveItem(job.id, toId(req.params.itemId), { appleId, notFound: Boolean(notFound) });
+    const { appleId, albumId, notFound, bandcampUrl } = req.body || {};
+    await resolveItem(job.id, toId(req.params.itemId), { appleId: albumId ?? appleId, notFound: Boolean(notFound), bandcampUrl });
     const row = q.items.all(job.id).find((i) => i.id === Number(req.params.itemId));
     res.json({ item: itemJson(row), job: jobJson(requireJob(req)) });
   });

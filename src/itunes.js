@@ -62,6 +62,7 @@ export function normalizeAlbum(r) {
     explicit: r.collectionExplicitness === 'explicit',
     copyright: r.copyright ?? null,
     country: r.country ?? null,
+    provider: 'apple',
   };
 }
 
@@ -166,6 +167,7 @@ export function createItunes(db, { country, perMinute }) {
     const out = new Map();
     const pending = [];
     for (const id of new Set(ids)) {
+      if (!(id > 0)) continue; // los ID negativos son de Bandcamp
       const r = recent.get(id);
       if (r && Date.now() - r.at < 3600e3) out.set(id, r.album);
       else pending.push(id);

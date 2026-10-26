@@ -113,6 +113,11 @@ const MIGRATIONS = [
   ALTER TABLE import_jobs ADD COLUMN mode TEXT NOT NULL DEFAULT 'import';  -- 'import' o 'sync'
   ALTER TABLE import_jobs ADD COLUMN info TEXT;                            -- JSON con el resumen de la sincronización
   `,
+  // v4: álbumes de Bandcamp (cuando no están en Apple Music). Sus ID son negativos.
+  `
+  ALTER TABLE albums ADD COLUMN provider TEXT NOT NULL DEFAULT 'apple';   -- 'apple' o 'bandcamp'
+  ALTER TABLE albums ADD COLUMN external_url TEXT;                          -- página del álbum en Bandcamp
+  `,
 ];
 
 export function openDb(file) {

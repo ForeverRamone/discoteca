@@ -8,6 +8,7 @@ App web autoalojada para organizar **álbumes completos** de Apple Music en cole
 - Importa tus listas de [Record Club](https://record.club) (o una lista en texto, CSV o Excel) como colecciones, emparejando cada disco con Apple Music.
 - Ordena cada colección arrastrando los discos, o por artista, año, posición original o fecha.
 - Al tocar una portada se abre el álbum en la app Música (iPhone y Mac). La app no reproduce música.
+- Si un disco no está en Apple Music, puede enlazarse a su página de **Bandcamp**.
 - Se instala en la pantalla de inicio del iPhone como una app (PWA), con modo oscuro.
 - Copias de seguridad en JSON desde la propia app.
 - Pensada para un solo usuario y protegida con una contraseña.
@@ -135,6 +136,19 @@ Cada colección importada recuerda su lista de origen. Para actualizarla:
 Al actualizar, solo se emparejan los **discos nuevos**; los que ya estaban conservan su emparejamiento. Si no has reordenado la colección a mano, los nuevos aparecen en su sitio según el orden de Record Club; si la has reordenado, se añaden al final. Los discos que se hayan quitado de la lista en Record Club se mantienen en la colección y se indican en el resumen de la actualización.
 
 **Sobre Record Club:** no tiene una API pública documentada. La app usa la misma API JSON que su web (`api.record.club`), con pocas peticiones y espaciadas, solo para tus listas públicas. Si algún día cambia o la bloquean, usa la importación por texto o CSV.
+
+## Discos que no están en Apple Music: Bandcamp
+
+Si un disco no está en Apple Music, la app puede guardarlo con su página de Bandcamp. Esos discos llevan la etiqueta **Bandcamp** en la portada y, al tocarla, se abre su página (en el iPhone, en Safari: la app de Bandcamp no abre álbumes desde enlaces).
+
+Al importar, cuando Apple Music no tiene nada parecido, la app busca el enlace de Bandcamp del disco:
+
+1. en **Record Club**, que lo guarda en muchos discos;
+2. si no, en **MusicBrainz**, la base de datos musical abierta (una petición por segundo, como pide su API).
+
+Después visita esa página del álbum y solo lo asigna si el título y el artista coinciden. Si Apple tiene opciones dudosas, la de Bandcamp aparece como una más en **Por revisar**. En la revisión también puedes pulsar **Buscar en Bandcamp** (abre su buscador en tu navegador) y **Pegar enlace de Bandcamp**, y en **Buscar** puedes pegar el enlace de cualquier álbum de Bandcamp.
+
+**Sobre Bandcamp:** no tiene API pública y su `robots.txt` no permite que los programas usen su buscador, así que la app **nunca busca en Bandcamp**. Solo lee la página de un álbum cuando ya conoce su URL: una petición por álbum, espaciada y guardada en caché durante 30 días. Las portadas se muestran desde los servidores de Bandcamp. Los discos de Bandcamp quedarían fuera si algún día se crean listas en Apple Music.
 
 ## Preparado para el futuro: listas reales en Apple Music
 

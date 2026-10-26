@@ -1,5 +1,5 @@
 import { api } from './api.js';
-import { h, icon, fill, toast, showError, openDialog, dialogHeader, confirmDialog } from './dom.js';
+import { h, icon, fill, toast, showError, openDialog, dialogHeader, confirmDialog, promptText } from './dom.js';
 import { prefs, changed, appleLink, linkTarget, folderById, folderPath } from './store.js';
 import { coverImg, pickFolder } from './components.js';
 
@@ -16,7 +16,15 @@ const METHOD_TEXT = {
   search: 'búsqueda',
   artist: 'discografía',
   user: 'elegido por ti',
+  bandcamp: 'Bandcamp (no está en Apple Music)',
 };
+
+// Abre el buscador de Bandcamp en tu navegador: lo usas tú, no la app.
+const bandcampSearchUrl = (it) => `https://bandcamp.com/search?q=${encodeURIComponent(`${it.artist} ${it.title}`)}&item_type=a`;
+const bandcampButtons = (it, onPaste) => [
+  h('a', { class: 'btn small', href: bandcampSearchUrl(it), target: '_blank', rel: 'noopener' }, icon('external'), 'Buscar en Bandcamp'),
+  h('button', { class: 'btn small', type: 'button', onclick: onPaste }, icon('plus'), 'Pegar enlace de Bandcamp…'),
+];
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
@@ -334,13 +342,13 @@ function chooseAlbum(item) {
 
     const option = (album) =>
       h('div', { class: 'choose-row' },
-        h('a', { class: 'result-cover small', href: appleLink(album), ...linkTarget(), title: 'Abrir en Apple Music' }, coverImg(album, 64)),
+        h('a', { class: 'result-cover small', href: appleLink(album), ...linkTarget(album), title: 'Abrir en Apple Music' }, coverImg(album, 64)),
         h('span', { class: 'result-text' },
           h('span', { class: 'row-title' }, album.title),
           album.artistId
             ? h('button', { class: 'artist-link plain', type: 'button', onclick: () => loadArtist(album.artistId, album.artist) }, album.artist)
             : h('span', { class: 'row-sub' }, album.artist),
-          h('span', { class: 'muted small' }, [album.year, album.trackCount && `${album.trackCount} pistas`, album.score != null && `${Math.round(album.score * 100)} %`].filter(Boolean).join(' · '))),
+          h('span', { class: 'muted small' }, [album.provider === 'bandcamp' && 'Bandcamp', album.year, album.trackCount && `${album.trackCount} pistas`, album.score != null && `${Math.round(album.score * 100)} %`].filter(Boolean).join(' · '))),
         h('button', { class: 'btn small primary', type: 'button', onclick: () => close({ appleId: album.id }) }, 'Elegir'));
 
     const show = (albums, label) => {
@@ -377,8 +385,10 @@ function chooseAlbum(item) {
           input, h('button', { class: 'btn', type: 'submit', 'aria-label': 'Buscar' }, icon('search'))),
         status,
         list,
-        h('div', { class: 'dlg-actions' },
-          h('button', { class: 'btn danger-text', type: 'button', onclick: () => close({ notFound: true }) }, 'No está en Apple Music'))));
+        h('p', { class: 'muted small' }, 'También puedes pegar arriba el enlace de una página de Bandcamp.'),
+        h('div', { class: 'dlg-actions wrap' },
+          h('a', { class: 'btn', href: bandcampSearchUrl(item), target: '_blank', rel: 'noopener' }, icon('external'), 'Buscar en Bandcamp'),
+          h('button', { class: 'btn danger-text', type: 'button', onclick: () => close({ notFound: true }) }, 'No está en ningún sitio'))));
   }, { className: 'wide' });
 }
 
@@ -439,7 +449,7 @@ export async function importJobView(id) {
       stat(c.auto, 'emparejados automáticamente', 'ok'),
       stat(c.user, 'elegidos por ti', 'ok'),
       stat(c.review, 'por revisar', 'warn'),
-      stat(c.notFound, 'no están en Apple Music', 'bad'),
+      stat(c.notFound, 'no encontrados', 'bad'),
       c.pending ? stat(c.pending, 'pendientes', '') : null);
   }
 
@@ -476,7 +486,7 @@ export async function importJobView(id) {
       row.append(h('p', { class: 'muted small item-note' }, 'Pendiente…'));
     } else if (it.status === 'matched' && it.album) {
       row.append(h('div', { class: 'item-match' },
-        h('a', { class: 'result-cover small', href: appleLink(it.album), ...linkTarget() }, coverImg(it.album, 56)),
+        h('a', { class: 'result-cover small', href: appleLink(it.album), ...linkTarget(it.album) }, coverImg(it.album, 56)),
         h('span', { class: 'result-text' },
           h('span', { class: 'row-title' }, it.album.title),
           h('span', { class: 'row-sub' }, it.album.artist),
@@ -484,8 +494,9 @@ export async function importJobView(id) {
         h('button', { class: 'btn small', type: 'button', onclick: () => change(it) }, 'Cambiar')));
     } else if (it.status === 'not_found') {
       row.append(h('div', { class: 'item-match' },
-        h('span', { class: 'muted small spacer' }, it.method === 'memory' ? 'Marcado antes como no disponible en Apple Music.' : 'No está en Apple Music.'),
-        h('button', { class: 'btn small', type: 'button', onclick: () => change(it) }, icon('search'), 'Buscar…')));
+        h('span', { class: 'muted small spacer' }, it.method === 'memory' ? 'Marcado antes como no disponible.' : 'No está en Apple Music ni en Bandcamp.'),
+        h('button', { class: 'btn small', type: 'button', onclick: () => change(it) }, icon('search'), 'Buscar…'),
+        ...bandcampButtons(it, () => pasteBandcamp(it))));
     } else {
       row.append(
         it.candidates.length
@@ -498,7 +509,8 @@ export async function importJobView(id) {
           : h('p', { class: 'muted small item-note' }, 'No he encontrado candidatos.'),
         h('div', { class: 'actions' },
           h('button', { class: 'btn small', type: 'button', onclick: () => change(it) }, icon('search'), 'Buscar…'),
-          h('button', { class: 'btn small danger-text', type: 'button', onclick: () => resolve(it, { notFound: true }) }, 'No está en Apple Music')));
+          ...bandcampButtons(it, () => pasteBandcamp(it)),
+          h('button', { class: 'btn small danger-text', type: 'button', onclick: () => resolve(it, { notFound: true }) }, 'No está en ningún sitio')));
     }
     return row;
   }
@@ -516,6 +528,16 @@ export async function importJobView(id) {
     } catch (err) {
       showError(err);
     }
+  }
+
+  async function pasteBandcamp(it) {
+    const url = await promptText({
+      title: 'Enlace de Bandcamp',
+      label: `Página del álbum «${it.title}» en Bandcamp`,
+      placeholder: 'https://artista.bandcamp.com/album/…',
+      okText: 'Usar este enlace',
+    });
+    if (url) await resolve(it, { bandcampUrl: url });
   }
 
   async function change(it) {

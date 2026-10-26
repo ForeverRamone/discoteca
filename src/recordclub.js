@@ -6,6 +6,7 @@
 // detalles de cada disco durante 30 días.
 
 import { parseAppleAlbumId } from './itunes.js';
+import { parseBandcampUrl } from './bandcamp.js';
 
 const API = 'https://api.record.club';
 const USER_AGENT = 'Discoteca/0.1 (self-hosted personal app; imports the owner\'s lists)';
@@ -159,13 +160,16 @@ export function createRecordClub(db, { delayMs = 700 } = {}) {
     };
   }
 
-  // ID de Apple Music que Record Club enlaza para un disco (puede estar desfasado).
-  async function appleHint(sourceUri) {
-    if (!/^\/releases\/[a-z]+\/[\w%.~-]+$/i.test(String(sourceUri))) return null;
+  // Enlaces que Record Club guarda para un disco: ID de Apple Music (puede estar desfasado)
+  // y página de Bandcamp, si la hay.
+  async function releaseLinks(sourceUri) {
+    if (!/^\/releases\/[a-z]+\/[\w%.~-]+$/i.test(String(sourceUri))) return { appleId: null, bandcampUrl: null };
     const data = (await get(sourceUri, { ttl: 30 * 864e5 })).data;
-    const link = (data?.streamingLinks || []).find((s) => s.service === 'apple')?.url;
-    return link ? parseAppleAlbumId(link) : null;
+    const link = (service) => (data?.streamingLinks || []).find((s) => s.service === service)?.url;
+    const apple = link('apple');
+    return { appleId: apple ? parseAppleAlbumId(apple) : null, bandcampUrl: parseBandcampUrl(link('bandcamp')) };
   }
+  const appleHint = async (sourceUri) => (await releaseLinks(sourceUri)).appleId;
 
   // Listas públicas de un usuario, recorriendo todas las páginas.
   async function fetchUserLists(username) {
@@ -188,5 +192,5 @@ export function createRecordClub(db, { delayMs = 700 } = {}) {
     return out;
   }
 
-  return { fetchList, fetchUserLists, appleHint };
+  return { fetchList, fetchUserLists, appleHint, releaseLinks };
 }

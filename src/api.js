@@ -1,11 +1,19 @@
 import express from 'express';
 import { transaction } from './db.js';
 import { parseAppleAlbumId, looksLikeAppleLink } from './itunes.js';
+import { looksLikeBandcampLink } from './bandcamp.js';
 import { albumFromRow } from './library.js';
 
 import { HttpError } from './errors.js';
 
 const SORT_MODES = new Set(['position', 'original', 'artist', 'year', 'title', 'added']);
+
+// ID de álbum: positivo (Apple Music) o negativo (Bandcamp).
+function toAlbumId(value) {
+  const n = Number(value);
+  if (!Number.isSafeInteger(n) || n === 0) throw new HttpError(400, 'Identificador de álbum no válido.');
+  return n;
+}
 
 function toId(value) {
   const n = Number(value);
@@ -34,7 +42,7 @@ function collectionFromRow(row) {
   };
 }
 
-export function createApi(db, itunes, library) {
+export function createApi(db, itunes, library, bandcamp) {
   const { saveAlbum } = library;
   const q = {
     album: db.prepare('SELECT * FROM albums WHERE id = ?'),
@@ -217,7 +225,7 @@ export function createApi(db, itunes, library) {
 
   r.post('/collections/:id/albums', (req, res) => {
     const c = requireCollection(toId(req.params.id));
-    const ids = Array.isArray(req.body?.albumIds) ? req.body.albumIds.map(toId) : [];
+    const ids = Array.isArray(req.body?.albumIds) ? req.body.albumIds.map(toAlbumId) : [];
     transaction(db, () => {
       for (const id of ids) {
         if (!q.album.get(id)) throw new HttpError(400, `El álbum ${id} no está en la biblioteca.`);
@@ -229,7 +237,7 @@ export function createApi(db, itunes, library) {
 
   r.delete('/collections/:id/albums/:albumId', (req, res) => {
     const c = requireCollection(toId(req.params.id));
-    q.removeFromCollection.run(c.id, toId(req.params.albumId));
+    q.removeFromCollection.run(c.id, toAlbumId(req.params.albumId));
     q.touchCollection.run(c.id);
     res.json({ ok: true });
   });
@@ -237,7 +245,7 @@ export function createApi(db, itunes, library) {
   // Guarda un orden manual completo (lista de IDs de álbum en el orden deseado).
   r.put('/collections/:id/order', (req, res) => {
     const c = requireCollection(toId(req.params.id));
-    const ids = Array.isArray(req.body?.albumIds) ? req.body.albumIds.map(toId) : [];
+    const ids = Array.isArray(req.body?.albumIds) ? req.body.albumIds.map(toAlbumId) : [];
     transaction(db, () => {
       const current = q.collectionAlbums.all(c.id).map((a) => a.id);
       const listed = new Set(ids);
@@ -253,29 +261,41 @@ export function createApi(db, itunes, library) {
   });
 
   r.get('/albums/:id', (req, res) => {
-    const id = toId(req.params.id);
+    const id = toAlbumId(req.params.id);
     const album = albumFromRow(q.album.get(id));
     if (!album) throw new HttpError(404, 'El álbum no está en la biblioteca.');
     res.json({ album, collectionIds: membershipOf(id) });
   });
 
-  // Guarda un álbum (por ID o enlace de Apple Music) y, opcionalmente, fija sus colecciones.
+  // Busca un álbum de Apple Music (ID positivo) o de Bandcamp (ID negativo, o enlace).
+  async function resolveRequested({ id, url }) {
+    if (!id && looksLikeBandcampLink(url)) {
+      const found = await bandcamp.fetchAlbum(url);
+      if (!found) throw new HttpError(404, 'Esa página de Bandcamp no existe o ya no está disponible.');
+      return found;
+    }
+    const requestedId = id ? toAlbumId(id) : parseAppleAlbumId(url);
+    if (!requestedId) throw new HttpError(400, 'No reconozco ese enlace. Pega un enlace de un álbum de Apple Music o de Bandcamp.');
+    const saved = albumFromRow(q.album.get(requestedId));
+    if (saved) return saved;
+    if (requestedId < 0) {
+      const recent = bandcamp.recentAlbum(requestedId);
+      if (!recent) throw new HttpError(404, 'No encuentro ese álbum de Bandcamp. Vuelve a pegar su enlace.');
+      return recent;
+    }
+    const found = await itunes.resolveAlbum(requestedId);
+    if (!found) throw new HttpError(404, `No encuentro ese álbum en la tienda de Apple Music (${itunes.country.toUpperCase()}).`);
+    return found;
+  }
+
+  // Guarda un álbum (por ID o enlace de Apple Music o Bandcamp) y, opcionalmente, fija sus colecciones.
   //   collectionIds: lista completa de colecciones (sustituye a las actuales)
   //   addTo: colecciones a las que añadirlo, sin quitarlo de otras
   r.post('/albums', async (req, res) => {
     const body = req.body || {};
-    const requestedId = body.id ? toId(body.id) : parseAppleAlbumId(body.url);
-    if (!requestedId) throw new HttpError(400, 'No reconozco ese enlace de Apple Music.');
-
-    let album = albumFromRow(q.album.get(requestedId));
-    if (!album) {
-      const found = await itunes.resolveAlbum(requestedId);
-      if (!found) {
-        throw new HttpError(404, `No encuentro ese álbum en la tienda de Apple Music (${itunes.country.toUpperCase()}).`);
-      }
-      saveAlbum(found);
-      album = albumFromRow(q.album.get(found.id));
-    }
+    let album = await resolveRequested(body);
+    if (!q.album.get(album.id)) saveAlbum(album);
+    album = albumFromRow(q.album.get(album.id));
     if (Array.isArray(body.collectionIds)) setMembership(album.id, body.collectionIds);
     if (Array.isArray(body.addTo)) {
       const ids = body.addTo.map(toId);
@@ -286,25 +306,29 @@ export function createApi(db, itunes, library) {
   });
 
   r.put('/albums/:id/collections', (req, res) => {
-    const id = toId(req.params.id);
+    const id = toAlbumId(req.params.id);
     if (!q.album.get(id)) throw new HttpError(404, 'El álbum no está en la biblioteca.');
     if (!Array.isArray(req.body?.collectionIds)) throw new HttpError(400, 'Falta la lista de colecciones.');
     setMembership(id, req.body.collectionIds);
     res.json({ collectionIds: membershipOf(id) });
   });
 
-  // Vuelve a pedir los metadatos a Apple (por si han cambiado la portada, etc.).
+  // Vuelve a pedir los metadatos a Apple o a Bandcamp (por si han cambiado la portada, etc.).
   r.post('/albums/:id/refresh', async (req, res) => {
-    const id = toId(req.params.id);
-    if (!q.album.get(id)) throw new HttpError(404, 'El álbum no está en la biblioteca.');
-    const found = await itunes.lookupAlbum(id);
-    if (!found) throw new HttpError(404, 'Apple ya no ofrece este álbum en tu tienda.');
+    const id = toAlbumId(req.params.id);
+    const row = q.album.get(id);
+    if (!row) throw new HttpError(404, 'El álbum no está en la biblioteca.');
+    const found = row.provider === 'bandcamp'
+      ? await bandcamp.fetchAlbum(row.external_url, { force: true })
+      : await itunes.lookupAlbum(id);
+    if (!found) throw new HttpError(404, row.provider === 'bandcamp' ? 'La página de Bandcamp ya no existe.' : 'Apple ya no ofrece este álbum en tu tienda.');
+    if (found.id !== id) throw new HttpError(409, 'La página de Bandcamp ahora corresponde a otro álbum.');
     saveAlbum(found);
     res.json({ album: albumFromRow(q.album.get(id)) });
   });
 
   r.delete('/albums/:id', (req, res) => {
-    q.deleteAlbum.run(toId(req.params.id));
+    q.deleteAlbum.run(toAlbumId(req.params.id));
     res.json({ ok: true });
   });
 
@@ -312,6 +336,10 @@ export function createApi(db, itunes, library) {
   r.get('/search', async (req, res) => {
     const term = String(req.query.q ?? '').trim();
     if (term.length < 2) return res.json({ kind: 'search', results: [] });
+    if (looksLikeBandcampLink(term)) {
+      const album = await bandcamp.fetchAlbum(term);
+      return res.json({ kind: 'link', results: annotate(album ? [album] : []), error: album ? undefined : 'Esa página de Bandcamp no existe o ya no está disponible.' });
+    }
     if (looksLikeAppleLink(term)) {
       const id = parseAppleAlbumId(term);
       if (!id) return res.json({ kind: 'link', results: [], error: 'No reconozco ese enlace como un álbum de Apple Music.' });

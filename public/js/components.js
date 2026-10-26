@@ -1,6 +1,7 @@
 import { api } from './api.js';
 import { h, icon, openDialog, dialogHeader, promptText, confirmDialog, actionSheet, toast, showError } from './dom.js';
 import { savedAlbumPlayer, pickBandcamp } from './bandcamp.js';
+import { lazyCover } from './images.js';
 import {
   state, prefs, collator, changed, appleLink, appleWebUrl, linkTarget, artwork, normalize, isBandcamp, serviceName,
   folderById, collectionById, childFolders, folderPath, descendantFolderIds, folderStats,
@@ -16,15 +17,9 @@ export function coverImg(album, size = 160) {
   return h('span', { class: 'cover-wrap' }, coverImgOnly(album, size), providerBadge(album));
 }
 
-function coverImgOnly(album, size) {
-  return h('img', {
-    src: artwork(album.artworkUrl, 300),
-    srcset: `${artwork(album.artworkUrl, 300)} 300w, ${artwork(album.artworkUrl, 600)} 600w, ${artwork(album.artworkUrl, 1000)} 1000w`,
-    sizes: `${size}px`,
-    loading: 'lazy',
-    decoding: 'async',
-    alt: '',
-  });
+// Tamaño justo según lo que ocupa en pantalla, carga diferida y liberación de memoria (images.js).
+function coverImgOnly(album) {
+  return lazyCover(album.artworkUrl);
 }
 
 const subtitle = (a) => [a.artist, a.year].filter(Boolean).join(' · ');

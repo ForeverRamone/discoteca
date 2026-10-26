@@ -113,7 +113,7 @@ async function serverVersion() {
 }
 
 // Vuelve a pedir colecciones y la pantalla actual. Si hay una versión nueva de la app, recarga entera.
-async function refreshAll({ quiet = false } = {}) {
+async function refreshAll({ quiet = false, silentSuccess = false } = {}) {
   if ($('shell').hidden) return;
   const version = await serverVersion();
   if (version && appVersion && version !== appVersion) {
@@ -124,13 +124,13 @@ async function refreshAll({ quiet = false } = {}) {
     await loadTree();
     renderSidebar(sidebar);
     await route({ keepScroll: true });
-    if (!quiet) toast('Actualizado');
+    if (!quiet && !silentSuccess) toast('Actualizado');
   } catch (err) {
     if (!quiet) showError(err);
   }
 }
 
-setupPullToRefresh(() => refreshAll());
+setupPullToRefresh(() => refreshAll({ silentSuccess: true })); // la animación ya indica que se ha actualizado
 setupResumeRefresh(refreshAll);
 
 async function boot() {

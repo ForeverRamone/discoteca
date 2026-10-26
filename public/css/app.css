@@ -568,18 +568,33 @@ details summary { cursor: pointer; }
 .tabs a.on { color: var(--text); border-bottom-color: var(--accent); }
 
 /* ---------- Tirar para actualizar ---------- */
-body { overscroll-behavior-y: contain; }
+/* Sin el rebote nativo: el desplazamiento lo controla el gesto de la app. */
+html, body { overscroll-behavior-y: none; }
 .ptr {
-  position: fixed; left: 50%; top: calc(env(safe-area-inset-top) + var(--topbar) + 8px); z-index: 15;
-  display: grid; place-items: center; width: 40px; height: 40px; border-radius: 999px;
-  background: var(--surface); border: 1px solid var(--border); color: var(--muted);
-  box-shadow: var(--shadow);
-  transform: translate(-50%, calc(var(--pull, 0px) - 60px)) rotate(calc(var(--pull, 0px) * 3));
-  opacity: 0; pointer-events: none; transition: opacity 0.15s;
+  position: fixed; left: 50%; top: calc(env(safe-area-inset-top) + var(--topbar)); z-index: 15;
+  display: grid; place-items: center; width: 38px; height: 38px; border-radius: 999px;
+  background: var(--surface); box-shadow: 0 2px 12px rgb(0 0 0 / 22%), 0 0 0 1px var(--border);
+  transform: translate3d(-50%, -46px, 0); opacity: 0; pointer-events: none;
+  will-change: transform, opacity;
 }
-.ptr.visible { opacity: 1; }
-.ptr.ready { color: var(--accent); }
-.ptr.loading { color: var(--accent); }
-.ptr.loading .icon { animation: ptr-spin 0.8s linear infinite; }
+@media (min-width: 900px) { .ptr { top: env(safe-area-inset-top); } }
+.ptr svg { width: 24px; height: 24px; }
+.ptr-track { stroke: var(--surface-3); }
+.ptr-arc { stroke: var(--accent); stroke-linecap: round; transition: stroke-dashoffset 0.08s linear; }
+.ptr-arrow { stroke: var(--muted); transform-box: fill-box; transform-origin: center; transition: transform 0.22s ease, stroke 0.2s ease; }
+.ptr.ready .ptr-arrow { stroke: var(--accent); }
+.ptr.spinning svg { animation: ptr-spin 0.75s linear infinite; }
+.ptr.spinning .ptr-arc { stroke-dashoffset: 40; transition: stroke-dashoffset 0.2s ease; }
+.ptr.spinning .ptr-arrow { opacity: 0; }
 @keyframes ptr-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .ptr.loading .icon { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .ptr.spinning svg { animation-duration: 2s; } }
+
+/* ---------- Portadas con carga diferida ---------- */
+.cover-wrap { background: var(--surface-2); }
+.cover-wrap img { opacity: 0; transition: opacity 0.25s ease; }
+.cover-wrap img.ready { opacity: 1; }
+.cover-wrap img.failed { visibility: hidden; }
+.cover-wrap.noart {
+  background: var(--surface-2) no-repeat center / 34% url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239b9ca3' stroke-width='1.6'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Ccircle cx='12' cy='12' r='2.5'/%3E%3C/svg%3E");
+}
+@media (prefers-reduced-motion: reduce) { .cover-wrap img { transition: none; } }

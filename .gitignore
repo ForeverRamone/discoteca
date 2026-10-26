@@ -1,0 +1,26 @@
+# Dependencias
+node_modules/
+
+# Datos locales (base de datos, secreto de sesión, copias)
+data/
+*.db
+*.db-shm
+*.db-wal
+backups/
+
+# Variables de entorno con secretos
+.env
+.env.*
+!.env.example
+
+# Sistema y editores
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.log
+npm-debug.log*
+
+# Configuración local de herramientas de desarrollo
+.claude/

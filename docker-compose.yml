@@ -1,0 +1,21 @@
+services:
+  discoteca:
+    build: .
+    image: discoteca:latest
+    container_name: discoteca
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-3000}:3000"
+    environment:
+      APP_PASSWORD: ${APP_PASSWORD:?Define APP_PASSWORD}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      ITUNES_COUNTRY: ${ITUNES_COUNTRY:-es}
+      TRUST_PROXY: ${TRUST_PROXY:-}
+      RC_DELAY_MS: ${RC_DELAY_MS:-700}
+      AUTO_SYNC_HOURS: ${AUTO_SYNC_HOURS:-0}
+      TZ: ${TZ:-Europe/Madrid}
+    volumes:
+      - discoteca-data:/data
+
+volumes:
+  discoteca-data:

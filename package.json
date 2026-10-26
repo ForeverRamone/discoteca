@@ -1,0 +1,18 @@
+{
+  "name": "discoteca",
+  "version": "0.1.0",
+  "description": "Organiza álbumes completos de Apple Music en colecciones y carpetas. Autoalojada.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/server.js",
+    "dev": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning --watch src/server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "sortablejs": "^1.15.7"
+  }
+}

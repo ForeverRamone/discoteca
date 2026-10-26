@@ -118,6 +118,14 @@ const MIGRATIONS = [
   ALTER TABLE albums ADD COLUMN provider TEXT NOT NULL DEFAULT 'apple';   -- 'apple' o 'bandcamp'
   ALTER TABLE albums ADD COLUMN external_url TEXT;                          -- página del álbum en Bandcamp
   `,
+  // v5: cualquier disco (también los de Apple Music) puede tener asociada su copia de Bandcamp.
+  `
+  ALTER TABLE albums ADD COLUMN bandcamp_url TEXT;   -- página del álbum en Bandcamp
+  ALTER TABLE albums ADD COLUMN bandcamp_id INTEGER; -- ID de álbum de Bandcamp (lo usa su reproductor)
+  UPDATE albums SET bandcamp_url = external_url,
+                    bandcamp_id = CASE WHEN -id < 1000000000000 THEN -id END
+  WHERE provider = 'bandcamp';
+  `,
 ];
 
 export function openDb(file) {

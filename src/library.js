@@ -15,6 +15,8 @@ export function albumFromRow(row) {
     appleUrl: row.apple_url,
     provider: row.provider || 'apple',
     externalUrl: row.external_url ?? null,
+    bandcampUrl: row.bandcamp_url ?? null,
+    bandcampId: row.bandcamp_id ?? null,
     explicit: Boolean(row.explicit),
     savedAt: row.created_at,
   };
@@ -32,9 +34,11 @@ export function createLibrary(db) {
     album: db.prepare('SELECT * FROM albums WHERE id = ?'),
     upsertAlbum: db.prepare(`
       INSERT INTO albums (id, title, artist, artist_id, year, release_date, genre, track_count,
-                          artwork_url, apple_url, explicit, copyright, country, provider, external_url)
+                          artwork_url, apple_url, explicit, copyright, country, provider, external_url,
+                          bandcamp_url, bandcamp_id)
       VALUES (:id, :title, :artist, :artistId, :year, :releaseDate, :genre, :trackCount,
-              :artworkUrl, :appleUrl, :explicit, :copyright, :country, :provider, :externalUrl)
+              :artworkUrl, :appleUrl, :explicit, :copyright, :country, :provider, :externalUrl,
+              :bandcampUrl, :bandcampId)
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title, artist = excluded.artist, artist_id = excluded.artist_id,
         year = excluded.year, release_date = excluded.release_date, genre = excluded.genre,
@@ -42,6 +46,10 @@ export function createLibrary(db) {
         apple_url = excluded.apple_url, explicit = excluded.explicit,
         copyright = excluded.copyright, country = excluded.country,
         provider = excluded.provider, external_url = excluded.external_url,
+        -- la copia de Bandcamp ya asociada se respeta (solo se cambia con setBandcamp)
+        bandcamp_url = COALESCE(albums.bandcamp_url, excluded.bandcamp_url),
+        bandcamp_id = CASE WHEN albums.bandcamp_url IS NULL OR albums.bandcamp_url = excluded.bandcamp_url
+                           THEN COALESCE(albums.bandcamp_id, excluded.bandcamp_id) ELSE albums.bandcamp_id END,
         updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')`),
     maxPosition: db.prepare('SELECT COALESCE(MAX(position), -1) AS m FROM collection_albums WHERE collection_id = ?'),
     addToCollection: db.prepare(`
@@ -49,6 +57,8 @@ export function createLibrary(db) {
       VALUES (?, ?, ?, ?)`),
     removeFromCollection: db.prepare('DELETE FROM collection_albums WHERE collection_id = ? AND album_id = ?'),
     touchCollection: db.prepare("UPDATE collections SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?"),
+    setBandcamp: db.prepare('UPDATE albums SET bandcamp_url = ?, bandcamp_id = ? WHERE id = ?'),
+    linkBandcampIfEmpty: db.prepare('UPDATE albums SET bandcamp_url = ? WHERE id = ? AND bandcamp_url IS NULL'),
   };
 
   function saveAlbum(album) {
@@ -68,8 +78,14 @@ export function createLibrary(db) {
       country: album.country ?? null,
       provider: album.provider === 'bandcamp' ? 'bandcamp' : 'apple',
       externalUrl: album.externalUrl ?? null,
+      bandcampUrl: album.bandcampUrl ?? (album.provider === 'bandcamp' ? album.externalUrl ?? null : null),
+      bandcampId: album.bandcampId ?? null,
     });
   }
+
+  // Copia de Bandcamp asociada a un disco (de Apple Music o no).
+  const setBandcamp = (albumId, url, bandcampId = null) => q.setBandcamp.run(url, bandcampId, albumId);
+  const linkBandcampIfEmpty = (albumId, url) => q.linkBandcampIfEmpty.run(url, albumId);
 
   const getAlbum = (id) => albumFromRow(q.album.get(id));
 
@@ -86,5 +102,5 @@ export function createLibrary(db) {
     q.touchCollection.run(collectionId);
   }
 
-  return { saveAlbum, getAlbum, addAlbumToCollection, removeAlbumFromCollection };
+  return { saveAlbum, getAlbum, addAlbumToCollection, removeAlbumFromCollection, setBandcamp, linkBandcampIfEmpty };
 }

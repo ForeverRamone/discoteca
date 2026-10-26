@@ -1,9 +1,14 @@
-// Lector de páginas de álbum de Bandcamp.
+// Integración con Bandcamp: buscar discos, leer la página de un álbum y su reproductor oficial.
 //
-// Bandcamp no tiene API pública y su robots.txt prohíbe a los programas usar /search y /api/,
-// así que esta app NUNCA busca en Bandcamp. Solo visita la página de un álbum cuando ya conoce
-// su URL (porque la trae Record Club o MusicBrainz, o porque la pegas tú): una petición por
-// álbum, espaciada y guardada en caché, igual que si abrieras la página en el navegador.
+// Bandcamp NO tiene API pública de búsqueda. Se usa el buscador interno de su web (el del
+// autocompletado), que no está documentado y podría cambiar sin aviso: todo es best-effort y,
+// si falla, la app sigue funcionando (queda pegar el enlace). Su robots.txt pide a los programas
+// no usar /api/, así que solo se busca cuando tú buscas o, al importar, para los pocos discos que
+// Apple Music no tiene; siempre espaciado y con caché.
+//
+// OJO: Bandcamp es sobre todo autoedición. Con discos clásicos devuelve bootlegs y versiones de
+// otros sellos, así que la búsqueda manual enseña los resultados y eliges tú; la importación solo
+// asigna uno si título y artista coinciden de verdad.
 
 const USER_AGENT = 'Mozilla/5.0 (compatible; Discoteca/0.1; +https://github.com/ForeverRamone/discoteca)';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -28,6 +33,44 @@ export function parseBandcampUrl(input) {
   if (!/^[a-z0-9-]+\.bandcamp\.com$/i.test(u.hostname)) return null;
   const m = u.pathname.match(/^\/(album|track)\/([\w%.~-]+)\/?$/i);
   return m ? `https://${u.hostname.toLowerCase()}/${m[1].toLowerCase()}/${m[2]}` : null;
+}
+
+const SEARCH_API = 'https://bandcamp.com/api/bcsearch_public_api/1/autocomplete_elastic';
+
+// URL https válida (los artistas con dominio propio se aceptan para enlazar, no para visitarlos).
+function safeHttpsUrl(value) {
+  try {
+    const u = new URL(String(value ?? ''));
+    return u.protocol === 'https:' ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
+// Resultado del buscador -> álbum (incompleto: el buscador no da año ni pistas).
+function hitToAlbum(r) {
+  const art = String(r.img ?? '').match(/\/img\/a?(\d+)_\d+\.jpg/)?.[1];
+  const url = safeHttpsUrl(r.item_url_path);
+  return {
+    id: -Number(r.id),
+    provider: 'bandcamp',
+    title: String(r.name ?? '').trim(),
+    artist: String(r.band_name ?? '').trim() || 'Artista desconocido',
+    artistId: null,
+    year: null,
+    releaseDate: null,
+    genre: null,
+    trackCount: null,
+    artworkUrl: art ? `https://f4.bcbits.com/img/a${art}_5.jpg` : null,
+    appleUrl: null,
+    externalUrl: url,
+    bandcampUrl: url,
+    bandcampId: Number(r.id),
+    explicit: false,
+    copyright: null,
+    country: null,
+    partial: true,
+  };
 }
 
 export const looksLikeBandcampLink = (input) => /bandcamp\.com\//i.test(String(input ?? ''));
@@ -60,6 +103,8 @@ export function parseAlbumPage(html, url) {
   const year = Number(text.match(/\breleased\s+(?:[A-Za-z]+\s+)?(?:\d{1,2}(?:,|\s)\s*)?(?:[A-Za-z]+\s+)?(\d{4})\b/i)?.[1]) || null;
   const canonical = parseBandcampUrl(meta(html, 'property', 'og:url')) || url;
   return {
+    bandcampUrl: canonical,
+    bandcampId: props.item_type === 't' ? null : itemId,
     id: props.item_type === 't' ? -(itemId + 1e12) : -itemId,
     provider: 'bandcamp',
     title: decode(title).trim(),
@@ -131,5 +176,52 @@ export function createBandcamp(db, { delayMs = 1500 } = {}) {
 
   const recentAlbum = (id) => recent.get(id) ?? null;
 
-  return { fetchAlbum, recentAlbum };
+  // Busca álbumes en Bandcamp. Lista vacía si no hay nada; error si Bandcamp no responde.
+  async function search(query, { limit = 10 } = {}) {
+    const text = String(query ?? '').trim().slice(0, 200);
+    if (text.length < 2) return [];
+    const key = `bandcamp-search:${text.toLowerCase()}`;
+    const hit = cacheGet.get(key);
+    let results;
+    if (hit && Date.now() - hit.fetched_at < 864e5) {
+      results = JSON.parse(hit.body);
+    } else {
+      await throttle();
+      let res;
+      try {
+        res = await fetch(SEARCH_API, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT, Accept: 'application/json' },
+          // search_filter "a" = solo álbumes (ni artistas, ni pistas, ni merchandising).
+          body: JSON.stringify({ search_text: text, search_filter: 'a', full_page: false, fan_id: null }),
+          signal: AbortSignal.timeout(15000),
+        });
+      } catch {
+        throw new BandcampError('No se pudo conectar con Bandcamp.');
+      }
+      if (!res.ok) throw new BandcampError(`El buscador de Bandcamp respondió con un error ${res.status}.`);
+      const data = await res.json().catch(() => null);
+      if (!data) throw new BandcampError('El buscador de Bandcamp ha cambiado o no responde como se esperaba.');
+      results = (data.auto?.results ?? []).filter((r) => r.type === 'a' && r.id && r.item_url_path);
+      cacheSet.run(key, JSON.stringify(results), Date.now());
+    }
+    const albums = results.slice(0, limit).map(hitToAlbum).filter((a) => a.title && a.externalUrl);
+    for (const a of albums) if (!recent.has(a.id)) recent.set(a.id, a);
+    return albums;
+  }
+
+  // Completa un resultado del buscador con los datos de su página (año, pistas…) si es posible.
+  async function complete(album) {
+    if (!album?.partial) return album;
+    const { partial, score, ...rest } = album;
+    if (!parseBandcampUrl(album.externalUrl)) return rest; // dominio propio: no se visita
+    try {
+      const full = await fetchAlbum(album.externalUrl);
+      return full && full.id === album.id ? full : rest;
+    } catch {
+      return rest;
+    }
+  }
+
+  return { fetchAlbum, recentAlbum, search, complete };
 }

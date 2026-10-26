@@ -1,7 +1,8 @@
 import { api } from './api.js';
-import { h, icon, fill, toast, showError, openDialog, dialogHeader, confirmDialog, promptText } from './dom.js';
+import { h, icon, fill, toast, showError, openDialog, dialogHeader, confirmDialog } from './dom.js';
 import { prefs, changed, appleLink, linkTarget, folderById, folderPath } from './store.js';
 import { coverImg, pickFolder } from './components.js';
+import { bandcampRow } from './bandcamp.js';
 
 const STATUS_TEXT = {
   fetching: 'Leyendo la lista',
@@ -19,12 +20,6 @@ const METHOD_TEXT = {
   bandcamp: 'Bandcamp (no está en Apple Music)',
 };
 
-// Abre el buscador de Bandcamp en tu navegador: lo usas tú, no la app.
-const bandcampSearchUrl = (it) => `https://bandcamp.com/search?q=${encodeURIComponent(`${it.artist} ${it.title}`)}&item_type=a`;
-const bandcampButtons = (it, onPaste) => [
-  h('a', { class: 'btn small', href: bandcampSearchUrl(it), target: '_blank', rel: 'noopener' }, icon('external'), 'Buscar en Bandcamp'),
-  h('button', { class: 'btn small', type: 'button', onclick: onPaste }, icon('plus'), 'Pegar enlace de Bandcamp…'),
-];
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
@@ -332,15 +327,19 @@ function jobRow(job) {
     countsLine(job.counts));
 }
 
-// ---------- Elegir un álbum a mano ----------
+// ---------- Elegir un álbum a mano (Apple Music o Bandcamp) ----------
 
-function chooseAlbum(item) {
+function chooseAlbum(item, startSource = 'apple') {
   return openDialog((close) => {
-    const input = h('input', { type: 'search', value: `${item.artist} ${item.title}`, 'aria-label': 'Buscar en Apple Music', enterkeyhint: 'search' });
+    let source = startSource;
+    const input = h('input', { type: 'search', value: `${item.artist} ${item.title}`, 'aria-label': 'Buscar', enterkeyhint: 'search' });
     const list = h('div', { class: 'choose-list' });
     const status = h('p', { class: 'muted small' });
+    const tabs = h('div', { class: 'tabs', role: 'tablist' });
 
-    const option = (album) =>
+    const meta = (album) => [album.year, album.trackCount && `${album.trackCount} pistas`, album.score != null && `${Math.round(album.score * 100)} %`].filter(Boolean).join(' · ');
+    const pick = (album) => h('button', { class: 'btn small primary', type: 'button', onclick: () => close({ albumId: album.id }) }, 'Elegir');
+    const appleRow = (album) =>
       h('div', { class: 'choose-row' },
         h('a', { class: 'result-cover small', href: appleLink(album), ...linkTarget(album), title: 'Abrir en Apple Music' }, coverImg(album, 64)),
         h('span', { class: 'result-text' },
@@ -348,19 +347,26 @@ function chooseAlbum(item) {
           album.artistId
             ? h('button', { class: 'artist-link plain', type: 'button', onclick: () => loadArtist(album.artistId, album.artist) }, album.artist)
             : h('span', { class: 'row-sub' }, album.artist),
-          h('span', { class: 'muted small' }, [album.provider === 'bandcamp' && 'Bandcamp', album.year, album.trackCount && `${album.trackCount} pistas`, album.score != null && `${Math.round(album.score * 100)} %`].filter(Boolean).join(' · '))),
-        h('button', { class: 'btn small primary', type: 'button', onclick: () => close({ appleId: album.id }) }, 'Elegir'));
+          h('span', { class: 'muted small' }, meta(album))),
+        pick(album));
+    const row = (album) => (album.provider === 'bandcamp' ? bandcampRow(album, pick(album)) : appleRow(album));
 
     const show = (albums, label) => {
       status.textContent = label;
-      fill(list, ...albums.map(option));
-      if (!albums.length) list.append(h('p', { class: 'muted pad' }, 'Sin resultados. Prueba solo con el artista y pulsa su nombre para ver la discografía.'));
+      fill(list, ...albums.map(row));
+      if (!albums.length) {
+        list.append(h('p', { class: 'muted pad' }, source === 'bandcamp'
+          ? 'Este disco no parece estar en Bandcamp.'
+          : 'Sin resultados. Prueba solo con el artista y pulsa su nombre para ver la discografía.'));
+      }
     };
     const run = async () => {
-      status.textContent = 'Buscando…';
+      const q = input.value.trim();
+      if (q.length < 2) return;
+      status.textContent = source === 'bandcamp' ? 'Buscando en Bandcamp…' : 'Buscando en Apple Music…';
       try {
-        const { results } = await api(`/search?q=${encodeURIComponent(input.value.trim())}`);
-        show(results, `${plural(results.length, 'resultado', 'resultados')} en Apple Music`);
+        const { results } = await api(`${source === 'bandcamp' ? '/bandcamp/search' : '/search'}?q=${encodeURIComponent(q)}`);
+        show(results, `${plural(results.length, 'resultado', 'resultados')} en ${source === 'bandcamp' ? 'Bandcamp' : 'Apple Music'}`);
       } catch (err) {
         status.textContent = err.message;
       }
@@ -374,20 +380,22 @@ function chooseAlbum(item) {
         status.textContent = err.message;
       }
     }
+    const drawTabs = () => fill(tabs, ...[['apple', 'Apple Music'], ['bandcamp', 'Bandcamp']].map(([key, label]) =>
+      h('button', { type: 'button', role: 'tab', class: source === key ? 'on' : '', onclick: () => { source = key; drawTabs(); run(); } }, label)));
+    drawTabs();
 
-    if (item.candidates.length) show(item.candidates, 'Mejores opciones encontradas');
+    if (source === 'apple' && item.candidates.length) show(item.candidates, 'Mejores opciones encontradas');
     else run();
 
     return h('div', { class: 'picker' },
       dialogHeader(`${item.artist} – ${item.title}`, close),
       h('div', { class: 'dlg-body' },
+        tabs,
         h('form', { class: 'search-form', onsubmit: (e) => { e.preventDefault(); run(); } },
           input, h('button', { class: 'btn', type: 'submit', 'aria-label': 'Buscar' }, icon('search'))),
         status,
         list,
-        h('p', { class: 'muted small' }, 'También puedes pegar arriba el enlace de una página de Bandcamp.'),
         h('div', { class: 'dlg-actions wrap' },
-          h('a', { class: 'btn', href: bandcampSearchUrl(item), target: '_blank', rel: 'noopener' }, icon('external'), 'Buscar en Bandcamp'),
           h('button', { class: 'btn danger-text', type: 'button', onclick: () => close({ notFound: true }) }, 'No está en ningún sitio'))));
   }, { className: 'wide' });
 }
@@ -496,7 +504,7 @@ export async function importJobView(id) {
       row.append(h('div', { class: 'item-match' },
         h('span', { class: 'muted small spacer' }, it.method === 'memory' ? 'Marcado antes como no disponible.' : 'No está en Apple Music ni en Bandcamp.'),
         h('button', { class: 'btn small', type: 'button', onclick: () => change(it) }, icon('search'), 'Buscar…'),
-        ...bandcampButtons(it, () => pasteBandcamp(it))));
+        h('button', { class: 'btn small', type: 'button', onclick: () => change(it, 'bandcamp') }, icon('search'), 'Buscar en Bandcamp')));
     } else {
       row.append(
         it.candidates.length
@@ -509,7 +517,7 @@ export async function importJobView(id) {
           : h('p', { class: 'muted small item-note' }, 'No he encontrado candidatos.'),
         h('div', { class: 'actions' },
           h('button', { class: 'btn small', type: 'button', onclick: () => change(it) }, icon('search'), 'Buscar…'),
-          ...bandcampButtons(it, () => pasteBandcamp(it)),
+          h('button', { class: 'btn small', type: 'button', onclick: () => change(it, 'bandcamp') }, icon('search'), 'Buscar en Bandcamp'),
           h('button', { class: 'btn small danger-text', type: 'button', onclick: () => resolve(it, { notFound: true }) }, 'No está en ningún sitio')));
     }
     return row;
@@ -530,18 +538,8 @@ export async function importJobView(id) {
     }
   }
 
-  async function pasteBandcamp(it) {
-    const url = await promptText({
-      title: 'Enlace de Bandcamp',
-      label: `Página del álbum «${it.title}» en Bandcamp`,
-      placeholder: 'https://artista.bandcamp.com/album/…',
-      okText: 'Usar este enlace',
-    });
-    if (url) await resolve(it, { bandcampUrl: url });
-  }
-
-  async function change(it) {
-    const choice = await chooseAlbum(it);
+  async function change(it, source = 'apple') {
+    const choice = await chooseAlbum(it, source);
     if (choice) await resolve(it, choice);
   }
 

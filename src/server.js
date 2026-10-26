@@ -35,7 +35,7 @@ app.use((req, res, next) => {
   res.setHeader(
     'Content-Security-Policy',
     "default-src 'self'; img-src 'self' data: https://*.mzstatic.com https://*.bcbits.com; style-src 'self'; " +
-      "script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+      "script-src 'self'; connect-src 'self'; frame-src https://bandcamp.com; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
   );
   next();
 });

@@ -1,5 +1,6 @@
 import { api } from './api.js';
 import { h, icon, openDialog, dialogHeader, promptText, confirmDialog, actionSheet, toast, showError } from './dom.js';
+import { savedAlbumPlayer, pickBandcamp } from './bandcamp.js';
 import {
   state, prefs, collator, changed, appleLink, appleWebUrl, linkTarget, artwork, normalize, isBandcamp, serviceName,
   folderById, collectionById, childFolders, folderPath, descendantFolderIds, folderStats,
@@ -73,10 +74,30 @@ export function albumGrid(albums, { mode = 'grid', size = 160, ctx = {} } = {}) 
   return wrap;
 }
 
+// Copia de Bandcamp en la ficha: escucharla aquí, abrirla, cambiarla o buscarla.
+function bandcampBlock(album, close) {
+  if (!album.bandcampUrl) {
+    if (isBandcamp(album)) return null;
+    return h('div', { class: 'bc-block' },
+      h('button', { class: 'btn small', type: 'button', onclick: () => close('bandcamp-link') }, icon('search'), 'Buscar su copia en Bandcamp'));
+  }
+  const { button, panel } = savedAlbumPlayer(album.id);
+  return h('div', { class: 'bc-block' },
+    !isBandcamp(album) && h('p', { class: 'small bc-title' }, 'También en Bandcamp'),
+    h('div', { class: 'actions' },
+      button,
+      !isBandcamp(album) && h('a', { class: 'btn small', href: album.bandcampUrl, target: '_blank', rel: 'noopener' }, icon('external'), 'Abrir en Bandcamp'),
+      !isBandcamp(album) && h('button', { class: 'btn small', type: 'button', onclick: () => close('bandcamp-link') }, 'Cambiar'),
+      !isBandcamp(album) && h('button', { class: 'btn small danger-text', type: 'button', onclick: () => close('bandcamp-unlink') }, 'Quitar')),
+    panel);
+}
+
 export async function albumDetails(album, ctx = {}) {
   let collectionIds = [];
   try {
-    collectionIds = (await api(`/albums/${album.id}`)).collectionIds;
+    const detail = await api(`/albums/${album.id}`);
+    collectionIds = detail.collectionIds;
+    album = { ...album, ...detail.album };
   } catch (err) {
     return showError(err);
   }
@@ -92,6 +113,7 @@ export async function albumDetails(album, ctx = {}) {
           [album.year, album.genre, album.trackCount && `${album.trackCount} pistas`].filter(Boolean).join(' · ')),
         h('a', { class: 'btn primary block', href: appleLink(album), ...linkTarget(album) }, icon(isBandcamp(album) ? 'external' : 'play'), `Abrir en ${serviceName(album)}`),
         isBandcamp(album) && h('p', { class: 'muted small center' }, 'Este disco no está en Apple Music: se abre su página de Bandcamp.'),
+        bandcampBlock(album, close),
         h('div', { class: 'chips' },
           collectionIds.length
             ? collectionIds.map((id) => collectionById(id)).filter(Boolean).map((c) =>
@@ -115,6 +137,18 @@ export async function albumDetails(album, ctx = {}) {
       await api(`/albums/${album.id}/refresh`, { method: 'POST' });
       toast('Datos actualizados');
       await changed();
+    } else if (action === 'bandcamp-link') {
+      const hit = await pickBandcamp({ title: `«${album.title}» en Bandcamp`, query: `${album.artist} ${album.title}` });
+      if (!hit) return albumDetails(album, ctx);
+      const res = await api(`/albums/${album.id}/bandcamp`, { method: 'PUT', body: { bandcampId: hit.bandcampId } });
+      toast('Copia de Bandcamp asociada');
+      await changed();
+      return albumDetails(res.album, ctx);
+    } else if (action === 'bandcamp-unlink') {
+      const res = await api(`/albums/${album.id}/bandcamp`, { method: 'DELETE' });
+      toast('Copia de Bandcamp quitada');
+      await changed();
+      return albumDetails(res.album, ctx);
     } else if (action === 'delete') {
       const ok = await confirmDialog({
         title: 'Eliminar de la biblioteca',

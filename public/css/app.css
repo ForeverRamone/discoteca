@@ -541,10 +541,28 @@ details summary { cursor: pointer; }
   padding: 1px 7px; border-radius: 999px;
   background: #1da0c3; color: #fff;
   font-size: 11px; font-weight: 700; letter-spacing: 0.02em; line-height: 1.6;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 35%); pointer-events: none;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 35%); pointer-events: none; white-space: nowrap;
 }
+.result-cover .provider-badge { left: 3px; bottom: 3px; padding: 0 5px; font-size: 9px; }
 .row-cover .provider-badge, .result-cover.small .provider-badge { left: 2px; bottom: 2px; padding: 0 4px; font-size: 8px; }
 .candidate .cover-wrap { aspect-ratio: 1; height: auto; margin-bottom: 4px; }
 .candidate .cover-wrap img { border-radius: 6px; margin: 0; }
 .dlg-actions.wrap { flex-wrap: wrap; }
 .center { text-align: center; }
+
+/* ---------- Reproductor y búsqueda de Bandcamp ---------- */
+.bc-block { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: transparent; }
+.bc-title { margin: 0; font-weight: 600; }
+.bc-player iframe { display: block; width: 100%; height: var(--h, 470px); border: 0; border-radius: var(--radius-sm); background: var(--surface); }
+.bc-player:not([hidden]) { margin-top: 4px; }
+.bc-loading { height: 120px; display: grid; place-items: center; color: var(--muted); font-size: 13px; }
+.bc-row { border-bottom: 1px solid var(--border); }
+.bc-row .choose-row { border-bottom: 0; }
+.bc-row .bc-player { padding-bottom: 10px; }
+.row-actions { display: flex; flex-direction: column; gap: 6px; }
+.result-wrap { border-bottom: 1px solid var(--border); }
+.result-wrap .result { border-bottom: 0; }
+.result-wrap .bc-player { padding-bottom: 12px; }
+.view-head .tabs { margin-bottom: 0; }
+.tabs a { flex: none; padding: 10px 14px; color: var(--muted); font-weight: 600; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tabs a.on { color: var(--text); border-bottom-color: var(--accent); }

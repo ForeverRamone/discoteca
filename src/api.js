@@ -1,7 +1,7 @@
 import express from 'express';
 import { transaction } from './db.js';
 import { parseAppleAlbumId, looksLikeAppleLink } from './itunes.js';
-import { looksLikeBandcampLink } from './bandcamp.js';
+import { looksLikeBandcampLink, parseBandcampUrl } from './bandcamp.js';
 import { albumFromRow } from './library.js';
 
 import { HttpError } from './errors.js';
@@ -280,8 +280,8 @@ export function createApi(db, itunes, library, bandcamp) {
     if (saved) return saved;
     if (requestedId < 0) {
       const recent = bandcamp.recentAlbum(requestedId);
-      if (!recent) throw new HttpError(404, 'No encuentro ese álbum de Bandcamp. Vuelve a pegar su enlace.');
-      return recent;
+      if (!recent) throw new HttpError(404, 'No encuentro ese álbum de Bandcamp. Vuelve a buscarlo.');
+      return bandcamp.complete(recent); // el buscador no da año ni pistas: se leen de su página
     }
     const found = await itunes.resolveAlbum(requestedId);
     if (!found) throw new HttpError(404, `No encuentro ese álbum en la tienda de Apple Music (${itunes.country.toUpperCase()}).`);
@@ -330,6 +330,73 @@ export function createApi(db, itunes, library, bandcamp) {
   r.delete('/albums/:id', (req, res) => {
     q.deleteAlbum.run(toAlbumId(req.params.id));
     res.json({ ok: true });
+  });
+
+  // ---------- Bandcamp ----------
+
+  // Buscador de Bandcamp dentro de la app.
+  r.get('/bandcamp/search', async (req, res) => {
+    const term = String(req.query.q ?? '').trim();
+    if (term.length < 2) return res.json({ results: [] });
+    if (looksLikeBandcampLink(term)) {
+      const album = await bandcamp.fetchAlbum(term);
+      return res.json({ results: annotate(album ? [album] : []) });
+    }
+    res.json({ results: annotate(await bandcamp.search(term)) });
+  });
+
+  // Asocia a un disco su copia de Bandcamp: un resultado del buscador (bandcampId) o un enlace (url).
+  r.put('/albums/:id/bandcamp', async (req, res) => {
+    const id = toAlbumId(req.params.id);
+    const row = q.album.get(id);
+    if (!row) throw new HttpError(404, 'El álbum no está en la biblioteca.');
+    if (row.provider === 'bandcamp') throw new HttpError(400, 'Este disco ya es de Bandcamp.');
+    const body = req.body || {};
+    let url = null;
+    let bcId = null;
+    if (body.bandcampId) {
+      const hit = bandcamp.recentAlbum(-toId(body.bandcampId));
+      if (!hit) throw new HttpError(404, 'Vuelve a buscar el disco en Bandcamp.');
+      ({ bandcampUrl: url, bandcampId: bcId } = hit);
+    } else if (body.url) {
+      const found = await bandcamp.fetchAlbum(body.url);
+      if (!found) throw new HttpError(404, 'Esa página de Bandcamp no existe o ya no está disponible.');
+      ({ bandcampUrl: url, bandcampId: bcId } = found);
+    } else {
+      throw new HttpError(400, 'Falta el disco de Bandcamp.');
+    }
+    library.setBandcamp(id, url, bcId);
+    res.json({ album: albumFromRow(q.album.get(id)) });
+  });
+
+  r.delete('/albums/:id/bandcamp', (req, res) => {
+    const id = toAlbumId(req.params.id);
+    const row = q.album.get(id);
+    if (!row) throw new HttpError(404, 'El álbum no está en la biblioteca.');
+    if (row.provider === 'bandcamp') throw new HttpError(400, 'Este disco es de Bandcamp: para quitarlo, elimínalo de la biblioteca.');
+    library.setBandcamp(id, null, null);
+    res.json({ album: albumFromRow(q.album.get(id)) });
+  });
+
+  // Datos del reproductor oficial de Bandcamp. Su ID no siempre se conoce (los enlaces de Record
+  // Club no lo traen): se saca de la página la primera vez y se guarda.
+  r.get('/albums/:id/bandcamp-player', async (req, res) => {
+    const id = toAlbumId(req.params.id);
+    const row = q.album.get(id);
+    if (!row?.bandcamp_url) return res.json({ player: null });
+    let bcId = row.bandcamp_id;
+    if (!bcId && parseBandcampUrl(row.bandcamp_url)) {
+      try {
+        const found = await bandcamp.fetchAlbum(row.bandcamp_url);
+        if (found?.bandcampId) {
+          bcId = found.bandcampId;
+          library.setBandcamp(id, row.bandcamp_url, bcId);
+        }
+      } catch {
+        // sin reproductor: queda el botón «Abrir en Bandcamp»
+      }
+    }
+    res.json({ player: bcId ? { albumId: bcId, url: row.bandcamp_url } : null });
   });
 
   // ---------- Búsqueda en Apple Music ----------

@@ -5,6 +5,7 @@ import {
   folderById, collectionById, childFolders, childCollections, folderPath,
 } from './store.js';
 import { enableReorder } from './reorder.js';
+import { hitPlayer } from './bandcamp.js';
 import { backupSection } from './backup.js';
 import {
   albumGrid, coverImg, pickCollections, createFolder, createCollection,
@@ -278,15 +279,20 @@ export async function searchView(params) {
   const artistName = params.get('name') || '';
   const toId = params.get('to') ? Number(params.get('to')) : null;
   const target = toId ? collectionById(toId) : null;
+  const source = params.get('src') === 'bandcamp' ? 'bandcamp' : 'apple';
 
-  const buildHash = (p) => {
+  const buildHash = (p, src = source) => {
     const sp = new URLSearchParams(p);
     if (toId) sp.set('to', toId);
+    if (src === 'bandcamp') sp.set('src', 'bandcamp');
     return `#/buscar?${sp}`;
   };
+  const sourceTabs = h('div', { class: 'tabs', role: 'tablist' },
+    [['apple', 'Apple Music'], ['bandcamp', 'Bandcamp']].map(([key, label]) =>
+      h('a', { role: 'tab', class: source === key ? 'on' : '', href: buildHash(q ? { q } : {}, key) }, label)));
 
   const input = h('input', {
-    type: 'search', value: q, placeholder: 'Artista, álbum o enlace de Apple Music o Bandcamp', 'aria-label': 'Buscar',
+    type: 'search', value: q, placeholder: source === 'bandcamp' ? 'Artista y álbum, o enlace de Bandcamp' : 'Artista, álbum o enlace de Apple Music', 'aria-label': 'Buscar',
     autocomplete: 'off', enterkeyhint: 'search',
   });
   const form = h('form', {
@@ -304,10 +310,11 @@ export async function searchView(params) {
 
   const header = h('div', { class: 'view-head' },
     target && crumbs(target.folderId, [{ label: target.name, href: `#/c/${target.id}` }]),
-    h('div', { class: 'title-row' }, h('h1', null, target ? `Añadir a «${target.name}»` : 'Buscar en Apple Music')),
+    h('div', { class: 'title-row' }, h('h1', null, target ? `Añadir a «${target.name}»` : 'Buscar')),
+    sourceTabs,
     form,
     h('div', { class: 'toolbar-row' },
-      h('label', { class: 'check' },
+      source === 'apple' && h('label', { class: 'check' },
         h('input', { type: 'checkbox', checked: includeSingles, onchange: (e) => { includeSingles = e.target.checked; prefs.set('includeSingles', includeSingles); draw(); } }),
         'Incluir singles y EP'),
       h('span', { class: 'spacer' }),
@@ -317,14 +324,17 @@ export async function searchView(params) {
   let kind = 'search';
 
   function draw() {
-    const visible = kind === 'link' || includeSingles ? items : items.filter((a) => !isSingleOrEp(a));
+    const visible = kind === 'link' || source === 'bandcamp' || includeSingles ? items : items.filter((a) => !isSingleOrEp(a));
     const hidden = items.length - visible.length;
     status.textContent = items.length ? `${visible.length} resultado${visible.length === 1 ? '' : 's'}${hidden ? ` · ${hidden} singles/EP ocultos` : ''}` : '';
     results.replaceChildren(...visible.map(resultRow));
     if (!visible.length && (q || artistId)) {
-      results.append(h('div', { class: 'empty' },
-        h('p', null, items.length ? 'Solo hay singles o EP. Marca «Incluir singles y EP» para verlos.' : 'Sin resultados.'),
-        h('p', { class: 'muted' }, 'Consejo: la búsqueda de Apple no siempre encuentra todos los discos. Busca solo el artista y pulsa su nombre para ver su discografía completa.')));
+      results.append(h('div', { class: 'empty' }, source === 'bandcamp'
+        ? h('p', null, 'Este disco no parece estar en Bandcamp.')
+        : [
+          h('p', null, items.length ? 'Solo hay singles o EP. Marca «Incluir singles y EP» para verlos.' : 'Sin resultados.'),
+          h('p', { class: 'muted' }, 'Consejo: la búsqueda de Apple no siempre encuentra todos los discos. Busca solo el artista y pulsa su nombre para ver su discografía completa.'),
+        ]));
     }
   }
 
@@ -374,8 +384,9 @@ export async function searchView(params) {
       updateBadge();
     } }, icon('stack'), target ? 'Otras…' : 'Añadir…');
 
-    const meta = [album.year, album.trackCount && `${album.trackCount} pistas`, album.genre].filter(Boolean).join(' · ');
-    return h('div', { class: 'result' },
+    const meta = [album.provider === 'bandcamp' && 'Bandcamp', album.year, album.trackCount && `${album.trackCount} pistas`, album.genre].filter(Boolean).join(' · ');
+    const player = album.provider === 'bandcamp' && album.bandcampId ? hitPlayer(album) : null;
+    return h('div', { class: 'result-wrap' }, h('div', { class: 'result' },
       h('a', { class: 'result-cover', href: appleLink(album), ...linkTarget(album), title: `Abrir en ${album.provider === 'bandcamp' ? 'Bandcamp' : 'Apple Music'}` }, coverImg(album, 88)),
       h('div', { class: 'result-text' },
         h('span', { class: 'row-title' }, album.title),
@@ -384,7 +395,8 @@ export async function searchView(params) {
           : h('span', { class: 'row-sub' }, album.artist),
         h('span', { class: 'muted small' }, meta),
         badge),
-      h('div', { class: 'result-actions' }, addBtn, pickBtn));
+      h('div', { class: 'result-actions' }, addBtn, pickBtn, player?.button)),
+    player?.panel);
   }
 
   const node = h('div', null, header, results);
@@ -402,7 +414,7 @@ export async function searchView(params) {
   } else if (q) {
     status.textContent = 'Buscando…';
     try {
-      const res = await api(`/search?q=${encodeURIComponent(q)}`);
+      const res = await api(`${source === 'bandcamp' ? '/bandcamp/search' : '/search'}?q=${encodeURIComponent(q)}`);
       items = res.results;
       kind = res.kind;
       if (res.error) toast(res.error, { error: true });
@@ -411,9 +423,12 @@ export async function searchView(params) {
     }
     draw();
   } else {
-    results.append(h('div', { class: 'empty' },
-      h('p', { class: 'muted' }, 'Escribe un artista o un álbum, o pega un enlace de Apple Music (en la app Música: Compartir › Copiar enlace).'),
-      h('p', { class: 'muted small' }, 'Si un disco no está en Apple Music, pega el enlace de su página de Bandcamp (https://artista.bandcamp.com/album/…).')));
+    results.append(h('div', { class: 'empty' }, source === 'bandcamp'
+      ? [
+        h('p', { class: 'muted' }, 'Busca en Bandcamp los discos que no están en Apple Music. Puedes escucharlos aquí antes de añadirlos.'),
+        h('p', { class: 'muted small' }, 'Bandcamp es sobre todo autoedición: con discos clásicos puede devolver ediciones no oficiales.'),
+      ]
+      : h('p', { class: 'muted' }, 'Escribe un artista o un álbum, o pega un enlace de Apple Music (en la app Música: Compartir › Copiar enlace).')));
     setTimeout(() => input.focus(), 50);
   }
   return { title: 'Buscar', node };

@@ -356,6 +356,7 @@ export function createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, 
         const remembered = w.memoryId && albumFor(w.memoryId);
         if (remembered) {
           applyMatch(job, w.item, { status: 'matched', method: 'memory', album: remembered, score: 1 });
+          if (w.bandcampUrl && remembered.provider !== 'bandcamp') library.linkBandcampIfEmpty(remembered.id, w.bandcampUrl);
           continue;
         }
         const source = { artist: w.item.artist, title: w.item.title, year: w.item.year, kind: w.item.kind };
@@ -366,19 +367,27 @@ export function createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, 
           if (bc?.verified) {
             applyMatch(job, w.item, { status: 'matched', method: 'bandcamp', album: bc.album, score: bc.candidate.score, candidates: [bc.candidate] });
             remember(w.item, job.source_type, bc.album.id, 'auto');
+          } else if (bc) {
+            // El buscador de Bandcamp tiene opciones: que elijas tú.
+            applyMatch(job, w.item, { status: 'review', method: null, album: null, score: bc.candidate.score, candidates: [bc.candidate, ...(bc.extra || [])] });
           } else {
-            q.updateItem.run('not_found', 'memory', null, null, bc ? JSON.stringify([bc.candidate]) : null, w.item.id);
+            q.updateItem.run('not_found', 'memory', null, null, null, w.item.id);
           }
           continue;
         }
 
         let res = await findMatch(source, itunes, { hintAlbum: w.hintId ? albumFor(w.hintId) : null });
+        if (res.status === 'matched' && w.bandcampUrl) res.album = { ...res.album, bandcampUrl: w.bandcampUrl };
         // 5. Si Apple no lo tiene con seguridad, Bandcamp.
         if (res.status !== 'matched') {
           const bc = await findBandcamp(w.item, w.bandcampUrl);
           if (bc) {
             const appleWeak = !res.candidates.length || res.candidates[0].score < APPLE_WEAK;
-            const candidates = [bc.candidate, ...res.candidates].sort((a, b) => b.score - a.score).slice(0, 6);
+            const seen = new Set();
+            const candidates = [bc.candidate, ...(bc.extra || []), ...res.candidates]
+              .filter((c) => !seen.has(c.id) && seen.add(c.id))
+              .sort((a, b) => b.score - a.score)
+              .slice(0, 6);
             res = bc.verified && appleWeak
               ? { status: 'matched', method: 'bandcamp', album: bc.album, score: bc.candidate.score, candidates }
               : { ...res, candidates };
@@ -395,8 +404,8 @@ export function createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, 
     setStatus(id, 'done', parts.join(' · ') || null);
   }
 
-  // Enlace de Bandcamp del disco: el de Record Club o, si no hay, los de MusicBrainz.
-  // Nunca se usa el buscador de Bandcamp. Devuelve el álbum y si título y artista coinciden.
+  // Disco en Bandcamp: primero el enlace de Record Club; si no hay, los de MusicBrainz; y si
+  // ninguno coincide, su buscador. Devuelve el mejor álbum, si coincide (verified) y otras opciones.
   async function findBandcamp(item, knownUrl) {
     if (!bandcamp) return null;
     const urls = knownUrl ? [knownUrl] : [];
@@ -425,7 +434,36 @@ export function createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, 
         // página no disponible: probamos la siguiente
       }
     }
-    return best;
+    if (best?.verified) return best;
+
+    // Buscador de Bandcamp (solo para discos que Apple no tiene con seguridad).
+    let hits = [];
+    try {
+      hits = await bandcamp.search(`${item.artist} ${item.title}`, { limit: 6 });
+    } catch {
+      return best; // el buscador no responde: seguimos con lo que haya
+    }
+    const source = { artist: item.artist, title: item.title, year: item.year, kind: item.kind };
+    const scored = hits
+      .map((album) => ({ album, s: scoreCandidate(source, album) }))
+      .sort((a, b) => b.s.score - a.s.score);
+    const extra = scored
+      .filter(({ s }) => s.score >= 0.3)
+      .slice(0, 3)
+      .map(({ album, s }) => ({ ...album, score: Math.round(Math.min(1, s.score) * 100) / 100 }));
+    const top = scored[0];
+    if (top && top.s.titleSim >= 0.85 && top.s.artistSim >= 0.7) {
+      const album = await bandcamp.complete(top.album);
+      return {
+        album,
+        verified: true,
+        candidate: { ...album, score: Math.round(Math.min(1, top.s.score) * 100) / 100 },
+        extra: extra.slice(1),
+      };
+    }
+    if (best) return { ...best, extra };
+    if (extra.length) return { album: null, verified: false, candidate: extra[0], extra: extra.slice(1) };
+    return null;
   }
 
   // Al arrancar, reanuda lo que se quedó a medias.
@@ -456,6 +494,7 @@ export function createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, 
       const id = toAlbumId(appleId);
       const fromCandidates = item.candidates ? JSON.parse(item.candidates).find((c) => c.id === id) : null;
       album = fromCandidates || library.getAlbum(id) || (id > 0 ? await itunes.resolveAlbum(id) : bandcamp?.recentAlbum(id));
+      if (album?.partial) album = await bandcamp.complete(album);
       if (!album) throw new HttpError(404, id > 0 ? 'Ese álbum no está en la tienda de Apple Music.' : 'No encuentro ese álbum de Bandcamp.');
     }
     transaction(db, () => {

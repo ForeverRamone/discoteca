@@ -22,7 +22,12 @@ export class RecordClubError extends Error {
 // https://record.club/usuario/lists/nombre-de-la-lista
 export function parseListUrl(input) {
   const m = String(input ?? '').trim().match(/record\.club\/([^/?#\s]+)\/lists\/([^/?#\s]+)/i);
-  return m ? { username: decodeURIComponent(m[1]), slug: decodeURIComponent(m[2]) } : null;
+  if (!m) return null;
+  try {
+    return { username: decodeURIComponent(m[1]), slug: decodeURIComponent(m[2]) };
+  } catch {
+    return null; // %-codificación rota, p. ej. «%E0»
+  }
 }
 
 export function listUrl(username, slug) {
@@ -40,7 +45,7 @@ export function htmlToText(html) {
     .replace(/&#39;|&apos;/g, "'")
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
-    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#(\d+);/g, (_, n) => (Number(n) <= 0x10ffff ? String.fromCodePoint(Number(n)) : ''))
     .replace(/&amp;/g, '&')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -67,6 +72,7 @@ export function createRecordClub(db, { delayMs = 700 } = {}) {
     `INSERT INTO http_cache (key, body, fetched_at) VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET body = excluded.body, fetched_at = excluded.fetched_at`,
   );
+  const cacheDel = db.prepare('DELETE FROM http_cache WHERE key = ?');
 
   let last = 0;
   let queue = Promise.resolve();
@@ -84,7 +90,13 @@ export function createRecordClub(db, { delayMs = 700 } = {}) {
     const url = `${API}${path}`;
     if (ttl) {
       const hit = cacheGet.get(url);
-      if (hit && Date.now() - hit.fetched_at < ttl) return JSON.parse(hit.body);
+      if (hit && Date.now() - hit.fetched_at < ttl) {
+        try {
+          return JSON.parse(hit.body);
+        } catch {
+          cacheDel.run(url); // entrada dañada: se vuelve a pedir
+        }
+      }
     }
     for (let attempt = 1; attempt <= 3; attempt++) {
       await throttle();
@@ -103,7 +115,8 @@ export function createRecordClub(db, { delayMs = 700 } = {}) {
       }
       if (res.status === 404) throw new RecordClubError('Record Club no encuentra esa lista. ¿Es pública y la URL es correcta?', 404);
       if (res.status === 429 || res.status >= 500) {
-        const retryAfter = Number(res.headers.get('retry-after')) || 30 * attempt;
+        // Retry-After con tope de 2 minutos (un valor enorme dejaría la cola parada).
+        const retryAfter = Math.min(120, Number(res.headers.get('retry-after')) || 30 * attempt);
         if (attempt < 3) {
           await sleep(retryAfter * 1000);
           continue;
@@ -117,8 +130,14 @@ export function createRecordClub(db, { delayMs = 700 } = {}) {
             : `Record Club respondió con un error ${res.status}.`,
         );
       }
-      if (ttl) cacheSet.run(url, text, Date.now());
-      return JSON.parse(text);
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new RecordClubError('Record Club ha devuelto una respuesta que no se entiende.');
+      }
+      if (ttl) cacheSet.run(url, text, Date.now()); // solo se guarda si es JSON válido
+      return data;
     }
     throw new RecordClubError('Record Club no responde. Inténtalo más tarde.');
   }

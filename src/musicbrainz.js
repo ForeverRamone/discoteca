@@ -14,6 +14,7 @@ export function createMusicBrainz(db) {
     `INSERT INTO http_cache (key, body, fetched_at) VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET body = excluded.body, fetched_at = excluded.fetched_at`,
   );
+  const cacheDel = db.prepare('DELETE FROM http_cache WHERE key = ?');
 
   let last = 0;
   let queue = Promise.resolve();
@@ -30,7 +31,13 @@ export function createMusicBrainz(db) {
   async function get(path) {
     const url = `${API}/${path}${path.includes('?') ? '&' : '?'}fmt=json`;
     const hit = cacheGet.get(url);
-    if (hit && Date.now() - hit.fetched_at < CACHE_TTL) return JSON.parse(hit.body);
+    if (hit && Date.now() - hit.fetched_at < CACHE_TTL) {
+      try {
+        return JSON.parse(hit.body);
+      } catch {
+        cacheDel.run(url); // entrada dañada: se vuelve a pedir
+      }
+    }
     for (let attempt = 1; attempt <= 3; attempt++) {
       await throttle();
       let res;
@@ -45,9 +52,14 @@ export function createMusicBrainz(db) {
         continue;
       }
       if (!res.ok) return null;
-      const text = await res.text();
-      cacheSet.run(url, text, Date.now());
-      return JSON.parse(text);
+      let data;
+      try {
+        data = JSON.parse(await res.text());
+      } catch {
+        return null; // no es JSON (p. ej. una página de error): no se guarda
+      }
+      cacheSet.run(url, JSON.stringify(data), Date.now());
+      return data;
     }
     return null;
   }

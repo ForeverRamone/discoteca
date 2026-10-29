@@ -19,6 +19,9 @@ export function albumFromRow(row) {
     bandcampId: row.bandcamp_id ?? null,
     explicit: Boolean(row.explicit),
     savedAt: row.created_at,
+    listenedAt: row.listened_at ?? null,
+    rating: row.rating ?? null,
+    notes: row.notes ?? null,
   };
   if (row.position !== undefined) {
     album.position = row.position;
@@ -27,6 +30,29 @@ export function albumFromRow(row) {
   }
   if (row.collection_count !== undefined) album.collectionCount = row.collection_count;
   return album;
+}
+
+// Órdenes de una colección (los mismos que aplica la interfaz en public/js/store.js).
+// rating: mejor valorados primero, sin valorar al final. listened: escuchados más recientemente
+// primero, sin escuchar al final. En caso de empate, el orden manual.
+export const SORT_MODES = ['position', 'original', 'artist', 'year', 'title', 'added', 'rating', 'listened'];
+
+const collator = new Intl.Collator('es', { numeric: true, sensitivity: 'base' });
+
+export function sortAlbums(albums, mode) {
+  const byPosition = (a, b) => (a.position ?? 0) - (b.position ?? 0);
+  const byArtist = (a, b) => collator.compare(a.artist, b.artist) || (a.year ?? 0) - (b.year ?? 0) || collator.compare(a.title, b.title);
+  const cmp = {
+    position: byPosition,
+    original: (a, b) => (a.originalPosition ?? a.position ?? 0) - (b.originalPosition ?? b.position ?? 0),
+    artist: byArtist,
+    year: (a, b) => (a.year ?? 9999) - (b.year ?? 9999) || byArtist(a, b),
+    title: (a, b) => collator.compare(a.title, b.title),
+    added: (a, b) => String(b.addedAt ?? b.savedAt).localeCompare(String(a.addedAt ?? a.savedAt)) || byPosition(a, b),
+    rating: (a, b) => (b.rating ?? 0) - (a.rating ?? 0) || byPosition(a, b),
+    listened: (a, b) => String(b.listenedAt ?? '').localeCompare(String(a.listenedAt ?? '')) || byPosition(a, b),
+  }[mode];
+  return cmp ? [...albums].sort(cmp) : [...albums];
 }
 
 export function createLibrary(db) {

@@ -46,7 +46,7 @@ Para actualizar a una versión nueva: **Stacks › discoteca › Pull and redepl
 | `APP_PASSWORD` | — | Contraseña de acceso. Obligatoria en Docker. Si está vacía (solo en local), la app no pide contraseña. |
 | `SESSION_SECRET` | generado | Firma la cookie de sesión. Si no se define, se genera y se guarda en `/data/.session-secret`. |
 | `ITUNES_COUNTRY` | `es` | Tienda de Apple Music (código de país). |
-| `TRUST_PROXY` | vacío | Pon `true` si la app está detrás de un proxy inverso (Nginx Proxy Manager, Traefik, Caddy…) para que las cookies usen `Secure` con HTTPS. |
+| `TRUST_PROXY` | vacío | Pon `true` si la app está detrás de un proxy inverso (Nginx Proxy Manager, Traefik, Caddy…) para que las cookies usen `Secure` con HTTPS y se vea la IP real de cada visitante. `true` equivale a **un** proxy delante; si hay varios encadenados (p. ej. Cloudflare + Nginx), pon el número (`2`), o la IP o subred del proxy (`172.18.0.0/16`, `loopback`). No lo actives si la app se expone directamente: cualquiera podría falsear su IP. |
 | `HOST_PORT` | `3000` | Puerto del host en `docker-compose.yml`. |
 | `SESSION_DAYS` | `180` | Duración de la sesión. |
 | `ITUNES_RATE_PER_MINUTE` | `20` | Peticiones por minuto a Apple (su límite orientativo). |
@@ -54,6 +54,8 @@ Para actualizar a una versión nueva: **Stacks › discoteca › Pull and redepl
 | `AUTO_SYNC_HOURS` | `0` | Si es mayor que 0, las colecciones de Record Club se actualizan solas cada N horas (por ejemplo, `168` = semanal). |
 
 Cambiar `APP_PASSWORD` cierra todas las sesiones abiertas.
+
+Contra los intentos de adivinar la contraseña, el inicio de sesión se bloquea 15 minutos tras 10 fallos desde una misma IP o 50 fallos en total.
 
 ## Desarrollo local
 
@@ -92,7 +94,14 @@ Si el nombre del volumen lleva el prefijo del stack, búscalo con `docker volume
 
 Cada colección se puede ver en cuadrícula (con tamaño de portada ajustable) o en lista, y ordenar por **orden manual**, **posición original** (la de Record Club o la del archivo importado), artista, año, título o fecha de añadido.
 
+También se pueden ordenar por **valoración** (de 1 a 5, las mejores primero) o por **escuchados** (los escuchados más recientemente primero). Cada disco de la biblioteca puede llevar una valoración, la fecha en que lo escuchaste y notas propias; son tuyos: actualizar los datos desde Apple o Bandcamp no los cambia, y se incluyen en la copia de seguridad.
+
 Para cambiar el orden manual, pulsa **Reordenar**, arrastra los discos (en el móvil, mantén pulsado y arrastra) y pulsa **Guardar orden**.
+
+## Exportar y duplicar colecciones
+
+- **Exportar** descarga una colección, en el orden en que la tengas, como **CSV** (con columnas *Posición, Artista, Álbum, Año, Enlace*; se abre en Excel o Numbers) o como **texto** (una línea `Artista – Álbum (Año)` por disco). Los dos formatos se pueden volver a importar en *Importar*.
+- **Duplicar** crea una copia en la misma carpeta, con su descripción, su orden y sus discos. La copia no queda enlazada a Record Club: actualizar la original no la cambia.
 
 ## Abrir en Apple Music
 

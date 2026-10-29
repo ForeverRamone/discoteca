@@ -63,6 +63,15 @@ export function createBackup({ db, dataDir, country }) {
         throw new HttpError(400, `La copia está dañada (sección «${key}»).`);
       }
     }
+    // Carpetas: ninguna puede colgar de sí misma ni de una de sus subcarpetas.
+    const parent = new Map((backup.data.folders ?? []).map((f) => [Number(f.id), f.parent_id == null ? null : Number(f.parent_id)]));
+    for (const start of parent.keys()) {
+      const seen = new Set();
+      for (let p = start; p != null && parent.has(p); p = parent.get(p)) {
+        if (seen.has(p)) throw new HttpError(400, 'La copia está dañada: hay carpetas que se contienen a sí mismas.');
+        seen.add(p);
+      }
+    }
   }
 
   function restore(backup) {

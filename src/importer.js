@@ -7,6 +7,7 @@ import { HttpError } from './errors.js';
 import { parseListUrl, listUrl } from './recordclub.js';
 import { parseUpload } from './parsers.js';
 import { findMatch, memoryKeys, scoreCandidate } from './matcher.js';
+import { attachment, csvDocument } from './csv.js';
 
 const CHUNK = 20;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -55,6 +56,8 @@ export function createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, 
     setJobSource: db.prepare(`
       UPDATE import_jobs SET collection_id = ?, title = ?, description = ?, source_ref = ? WHERE id = ?`),
     deleteJob: db.prepare('DELETE FROM import_jobs WHERE id = ?'),
+    lastJobFor: db.prepare('SELECT MAX(created_at) AS at FROM import_jobs WHERE collection_id = ?'),
+    fetchingImports: db.prepare("SELECT id, source_url FROM import_jobs WHERE source_type = 'recordclub' AND mode = 'import' AND status = 'fetching' ORDER BY id"),
     unfinishedJobs: db.prepare("SELECT id FROM import_jobs WHERE status IN ('fetching', 'matching') ORDER BY id"),
     counts: db.prepare('SELECT status, method, COUNT(*) AS n FROM import_items WHERE job_id = ? GROUP BY status, method'),
 
@@ -301,6 +304,7 @@ export function createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, 
     }
     if (job.status !== 'matching') return;
 
+    let failures = 0; // discos seguidos que han fallado
     for (;;) {
       job = q.job.get(id);
       if (!job) return; // borrado mientras se importaba
@@ -350,51 +354,21 @@ export function createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, 
         }
       }
 
-      // 3-4. Búsqueda por texto y discografía
+      // 3-4. Búsqueda por texto y discografía. Un disco que falla va a revisión (para buscarlo a
+      // mano) en vez de tumbar la importación; si fallan varios seguidos (Apple caído, por ejemplo),
+      // la importación se para con error y se puede reintentar donde se quedó.
       for (const w of work) {
         if (!q.job.get(id)) return;
-        const remembered = w.memoryId && albumFor(w.memoryId);
-        if (remembered) {
-          applyMatch(job, w.item, { status: 'matched', method: 'memory', album: remembered, score: 1 });
-          if (w.bandcampUrl && remembered.provider !== 'bandcamp') library.linkBandcampIfEmpty(remembered.id, w.bandcampUrl);
-          continue;
-        }
-        const source = { artist: w.item.artist, title: w.item.title, year: w.item.year, kind: w.item.kind };
-
-        // Ya sabías que no está en Apple Music: solo queda probar Bandcamp.
-        if (w.notInApple) {
-          const bc = await findBandcamp(w.item, w.bandcampUrl);
-          if (bc?.verified) {
-            applyMatch(job, w.item, { status: 'matched', method: 'bandcamp', album: bc.album, score: bc.candidate.score, candidates: [bc.candidate] });
-            remember(w.item, job.source_type, bc.album.id, 'auto');
-          } else if (bc) {
-            // El buscador de Bandcamp tiene opciones: que elijas tú.
-            applyMatch(job, w.item, { status: 'review', method: null, album: null, score: bc.candidate.score, candidates: [bc.candidate, ...(bc.extra || [])] });
-          } else {
-            q.updateItem.run('not_found', 'memory', null, null, null, w.item.id);
-          }
-          continue;
-        }
-
-        let res = await findMatch(source, itunes, { hintAlbum: w.hintId ? albumFor(w.hintId) : null });
-        if (res.status === 'matched' && w.bandcampUrl) res.album = { ...res.album, bandcampUrl: w.bandcampUrl };
-        // 5. Si Apple no lo tiene con seguridad, Bandcamp.
-        if (res.status !== 'matched') {
-          const bc = await findBandcamp(w.item, w.bandcampUrl);
-          if (bc) {
-            const appleWeak = !res.candidates.length || res.candidates[0].score < APPLE_WEAK;
-            const seen = new Set();
-            const candidates = [bc.candidate, ...(bc.extra || []), ...res.candidates]
-              .filter((c) => !seen.has(c.id) && seen.add(c.id))
-              .sort((a, b) => b.score - a.score)
-              .slice(0, 6);
-            res = bc.verified && appleWeak
-              ? { status: 'matched', method: 'bandcamp', album: bc.album, score: bc.candidate.score, candidates }
-              : { ...res, candidates };
+        try {
+          await matchItem(job, w, albumFor);
+          failures = 0;
+        } catch (err) {
+          if (++failures >= 3) throw err;
+          console.error(`Importación ${id}, disco ${w.item.id}:`, err.message);
+          if (q.item.get(w.item.id, id)?.status === 'pending') {
+            q.updateItem.run('review', null, null, null, null, w.item.id);
           }
         }
-        applyMatch(job, w.item, res);
-        if (res.status === 'matched') remember(w.item, job.source_type, res.album.id, 'auto');
       }
     }
     const c = counts(id);
@@ -402,6 +376,52 @@ export function createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, 
     if (job.mode === 'sync') parts.push(`${c.total} disco${c.total === 1 ? '' : 's'} nuevo${c.total === 1 ? '' : 's'}`);
     if (c.review) parts.push(`${c.review} por revisar`);
     setStatus(id, 'done', parts.join(' · ') || null);
+  }
+
+  // Empareja un disco: memoria, enlace de Record Club, búsqueda en Apple y, si no, Bandcamp.
+  async function matchItem(job, w, albumFor) {
+    const remembered = w.memoryId && albumFor(w.memoryId);
+    if (remembered) {
+      applyMatch(job, w.item, { status: 'matched', method: 'memory', album: remembered, score: 1 });
+      if (w.bandcampUrl && remembered.provider !== 'bandcamp') library.linkBandcampIfEmpty(remembered.id, w.bandcampUrl);
+      return;
+    }
+    const source = { artist: w.item.artist, title: w.item.title, year: w.item.year, kind: w.item.kind };
+
+    // Ya sabías que no está en Apple Music: solo queda probar Bandcamp.
+    if (w.notInApple) {
+      const bc = await findBandcamp(w.item, w.bandcampUrl);
+      if (bc?.verified) {
+        applyMatch(job, w.item, { status: 'matched', method: 'bandcamp', album: bc.album, score: bc.candidate.score, candidates: [bc.candidate] });
+        remember(w.item, job.source_type, bc.album.id, 'auto');
+      } else if (bc) {
+        // El buscador de Bandcamp tiene opciones: que elijas tú.
+        applyMatch(job, w.item, { status: 'review', method: null, album: null, score: bc.candidate.score, candidates: [bc.candidate, ...(bc.extra || [])] });
+      } else {
+        q.updateItem.run('not_found', 'memory', null, null, null, w.item.id);
+      }
+      return;
+    }
+
+    let res = await findMatch(source, itunes, { hintAlbum: w.hintId ? albumFor(w.hintId) : null });
+    if (res.status === 'matched' && w.bandcampUrl) res.album = { ...res.album, bandcampUrl: w.bandcampUrl };
+    // 5. Si Apple no lo tiene con seguridad, Bandcamp.
+    if (res.status !== 'matched') {
+      const bc = await findBandcamp(w.item, w.bandcampUrl);
+      if (bc) {
+        const appleWeak = !res.candidates.length || res.candidates[0].score < APPLE_WEAK;
+        const seen = new Set();
+        const candidates = [bc.candidate, ...(bc.extra || []), ...res.candidates]
+          .filter((c) => !seen.has(c.id) && seen.add(c.id))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 6);
+        res = bc.verified && appleWeak
+          ? { status: 'matched', method: 'bandcamp', album: bc.album, score: bc.candidate.score, candidates }
+          : { ...res, candidates };
+      }
+    }
+    applyMatch(job, w.item, res);
+    if (res.status === 'matched') remember(w.item, job.source_type, res.album.id, 'auto');
   }
 
   // Disco en Bandcamp: primero el enlace de Record Club; si no hay, los de MusicBrainz; y si
@@ -497,12 +517,19 @@ export function createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, 
       if (album?.partial) album = await bandcamp.complete(album);
       if (!album) throw new HttpError(404, id > 0 ? 'Ese álbum no está en la tienda de Apple Music.' : 'No encuentro ese álbum de Bandcamp.');
     }
+    // Mientras se consultaba Apple o Bandcamp, la importación o el disco pueden haber cambiado.
     transaction(db, () => {
-      if (item.album_id !== album.id) detach(job, item);
+      const nowJob = q.job.get(jobId);
+      const nowItem = q.item.get(itemId, jobId);
+      if (!nowJob || !nowItem) throw new HttpError(404, 'La importación o el disco ya no existen.');
+      if (nowItem.status !== item.status || nowItem.album_id !== item.album_id) {
+        throw new HttpError(409, 'Este disco ha cambiado mientras se buscaba. Vuelve a cargar la lista.');
+      }
+      if (nowItem.album_id !== album.id) detach(nowJob, nowItem);
       library.saveAlbum(album);
-      attach(job, item, album.id);
-      q.updateItem.run('matched', 'user', album.id, null, item.candidates, item.id);
-      remember(item, job.source_type, album.id, 'confirmed');
+      attach(nowJob, nowItem, album.id);
+      q.updateItem.run('matched', 'user', album.id, null, nowItem.candidates, nowItem.id);
+      remember(nowItem, nowJob.source_type, album.id, 'confirmed');
     });
   }
 
@@ -512,22 +539,33 @@ export function createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, 
     for (const item of q.reviewItems.all(jobId)) {
       const best = item.candidates ? JSON.parse(item.candidates)[0] : null;
       if (best && best.score >= minScore) {
-        await resolveItem(jobId, item.id, { appleId: best.id });
-        accepted++;
+        try {
+          await resolveItem(jobId, item.id, { appleId: best.id });
+          accepted++;
+        } catch (err) {
+          if (err.status !== 409) throw err; // ya lo habías resuelto tú: se salta
+        }
       }
     }
     return accepted;
   }
 
+  // Clave de una lista de Record Club, para comparar URL escritas de distinta forma.
+  const listKey = (url) => {
+    const ref = parseListUrl(url);
+    return ref ? `${ref.username}/${ref.slug}`.toLowerCase() : null;
+  };
+
   // Colección ya importada desde esa misma lista (para no duplicarla).
   function importedCollectionFor(url) {
-    const ref = parseListUrl(url);
-    if (!ref) return null;
-    const key = `${ref.username}/${ref.slug}`.toLowerCase();
-    return q.rcCollections.all().find((c) => {
-      const r = parseListUrl(c.source_url);
-      return r && `${r.username}/${r.slug}`.toLowerCase() === key;
-    }) || null;
+    const key = listKey(url);
+    return key ? q.rcCollections.all().find((c) => listKey(c.source_url) === key) || null : null;
+  }
+
+  // Importación de esa lista que aún la está leyendo (todavía no tiene colección).
+  function fetchingImportFor(url) {
+    const key = listKey(url);
+    return key ? q.fetchingImports.all().find((j) => listKey(j.source_url) === key) || null : null;
   }
 
   function createSyncJob(collectionId) {
@@ -551,6 +589,8 @@ export function createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, 
       if (!ref) throw new HttpError(400, `No reconozco «${url}». Debe ser como https://record.club/usuario/lists/nombre-de-la-lista`);
       const existing = importedCollectionFor(url);
       if (existing) return { id: createSyncJob(existing.id), mode: 'sync', collectionId: existing.id };
+      const pending = fetchingImportFor(url);
+      if (pending) return { id: pending.id, mode: 'import' };
       const info = q.insertJob.run(null, folderId ?? null, 'recordclub', listUrl(ref.username, ref.slug), null, null, 'fetching', 'import');
       const id = Number(info.lastInsertRowid);
       enqueue(id);
@@ -573,7 +613,9 @@ export function createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, 
   function autoSync() {
     const maxAge = autoSyncHours * 3600e3;
     for (const c of q.rcCollections.all()) {
-      const last = c.last_synced_at ? Date.parse(c.last_synced_at) : 0;
+      // Cuenta también el último intento: si una actualización falla, no se reintenta cada 30 min.
+      const tried = q.lastJobFor.get(c.id)?.at;
+      const last = Math.max(c.last_synced_at ? Date.parse(c.last_synced_at) : 0, tried ? Date.parse(tried) : 0) || 0;
       if (Date.now() - last < maxAge || q.activeJobFor.get(c.id)) continue;
       try {
         createSyncJob(c.id);
@@ -619,8 +661,7 @@ export function createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, 
       const jobs = [];
       const errors = [];
       for (const url of urls) {
-        const ref = parseListUrl(url);
-        const key = ref ? `${ref.username}/${ref.slug}`.toLowerCase() : url;
+        const key = listKey(url) ?? url;
         if (seen.has(key)) continue;
         seen.add(key);
         try {
@@ -703,27 +744,20 @@ export function createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, 
   r.post('/:id/retry', (req, res) => {
     const job = requireJob(req);
     if (job.status !== 'error') throw new HttpError(400, 'Solo se pueden reintentar las importaciones con error.');
-    setStatus(job.id, job.collection_id || job.source_type !== 'recordclub' ? 'matching' : 'fetching');
+    // Si no llegó a leer la lista de Record Club (importación o actualización sin discos), vuelve a leerla.
+    const refetch = job.source_type === 'recordclub' && (!job.collection_id || !counts(job.id).total);
+    setStatus(job.id, refetch ? 'fetching' : 'matching');
     enqueue(job.id);
     res.json({ ok: true });
   });
 
   r.get('/:id/no-encontrados.csv', (req, res) => {
     const job = requireJob(req);
-    // Un texto que empieza por = + - @ se trataría como fórmula en Excel: se antepone un apóstrofo.
-    const esc = (v) => {
-      let s = String(v ?? '');
-      if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
-      return `"${s.replace(/"/g, '""')}"`;
-    };
-    const lines = [['posicion', 'artista', 'album', 'año', 'enlace'].join(',')];
-    for (const it of q.notFoundItems.all(job.id)) {
-      lines.push([it.position + 1, it.artist, it.title, it.year ?? '', it.source_url ?? ''].map(esc).join(','));
-    }
-    const filename = `no-encontrados-${(job.title || 'importacion').normalize('NFD').replace(/[^\w-]+/g, '-').slice(0, 60)}.csv`;
+    const rows = [['posicion', 'artista', 'album', 'año', 'enlace']];
+    for (const it of q.notFoundItems.all(job.id)) rows.push([it.position + 1, it.artist, it.title, it.year ?? '', it.source_url ?? '']);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.send(`﻿${lines.join('\r\n')}\r\n`);
+    res.setHeader('Content-Disposition', attachment(`no-encontrados-${job.title || 'importacion'}`, 'csv', 'no-encontrados'));
+    res.send(csvDocument(rows));
   });
 
   r.delete('/:id', (req, res) => {

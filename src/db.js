@@ -126,6 +126,12 @@ const MIGRATIONS = [
                     bandcamp_id = CASE WHEN -id < 1000000000000 THEN -id END
   WHERE provider = 'bandcamp';
   `,
+  // v6: datos personales de cada disco (no vienen de Apple ni de Bandcamp; saveAlbum no los toca).
+  `
+  ALTER TABLE albums ADD COLUMN listened_at TEXT;                                   -- cuándo lo escuchaste (ISO 8601)
+  ALTER TABLE albums ADD COLUMN rating INTEGER CHECK (rating BETWEEN 1 AND 5);      -- valoración de 1 a 5
+  ALTER TABLE albums ADD COLUMN notes TEXT;                                         -- notas libres
+  `,
 ];
 
 export function openDb(file) {
@@ -138,8 +144,17 @@ export function openDb(file) {
       db.exec(`PRAGMA user_version = ${i + 1}`);
     });
   }
-  // Limpia la caché HTTP antigua.
-  db.prepare('DELETE FROM http_cache WHERE fetched_at < ?').run(Date.now() - 30 * 864e5);
+  // Limpia la caché HTTP antigua al arrancar y cada 12 horas.
+  const purge = db.prepare('DELETE FROM http_cache WHERE fetched_at < ?');
+  const purgeCache = () => {
+    try {
+      purge.run(Date.now() - 30 * 864e5);
+    } catch (err) {
+      if (db.isOpen) console.error('Limpieza de la caché:', err.message);
+    }
+  };
+  purgeCache();
+  setInterval(purgeCache, 12 * 3600e3).unref();
   return db;
 }
 

@@ -18,9 +18,11 @@ function loadSessionSecret() {
   }
 }
 
+// «true» equivale a 1 salto (el proxy inverso de delante). Con true a secas, Express se fiaría de
+// toda la cabecera X-Forwarded-For, que el cliente puede inventarse para esquivar el freno de intentos.
 function parseTrustProxy(value) {
   if (!value) return false;
-  if (value === 'true') return true;
+  if (value === 'true') return 1;
   if (value === 'false') return false;
   if (/^\d+$/.test(value)) return Number(value);
   return value; // p. ej. "loopback" o una IP/subred

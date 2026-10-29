@@ -2,11 +2,23 @@ import express from 'express';
 import { transaction } from './db.js';
 import { parseAppleAlbumId, looksLikeAppleLink } from './itunes.js';
 import { looksLikeBandcampLink, parseBandcampUrl } from './bandcamp.js';
-import { albumFromRow } from './library.js';
-
+import { albumFromRow, sortAlbums, SORT_MODES as SORTS } from './library.js';
+import { attachment, csvDocument } from './csv.js';
 import { HttpError } from './errors.js';
 
-const SORT_MODES = new Set(['position', 'original', 'artist', 'year', 'title', 'added']);
+const SORT_MODES = new Set(SORTS);
+const isoNow = () => new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+// Fecha de escucha: «AAAA-MM-DD» o fecha y hora ISO 8601; se guarda en UTC («AAAA-MM-DDTHH:MM:SSZ»).
+function toListenedAt(value) {
+  if (value === null) return null;
+  const s = String(value ?? '').trim();
+  const t = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/.test(s) ? Date.parse(s) : NaN;
+  if (!Number.isFinite(t) || t < Date.UTC(1900, 0, 1) || t > Date.now() + 864e5) {
+    throw new HttpError(400, 'Fecha de escucha no válida. Usa el formato AAAA-MM-DD.');
+  }
+  return new Date(t).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
 
 // ID de álbum: positivo (Apple Music) o negativo (Bandcamp).
 function toAlbumId(value) {
@@ -50,6 +62,9 @@ export function createApi(db, itunes, library, bandcamp) {
       SELECT a.*, (SELECT COUNT(*) FROM collection_albums ca WHERE ca.album_id = a.id) AS collection_count
       FROM albums a ORDER BY a.created_at DESC, a.id DESC`),
     deleteAlbum: db.prepare('DELETE FROM albums WHERE id = ?'),
+    setPersonal: db.prepare(`
+      UPDATE albums SET listened_at = ?, rating = ?, notes = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+      WHERE id = ?`),
     membership: db.prepare('SELECT collection_id FROM collection_albums WHERE album_id = ?'),
 
     folders: db.prepare('SELECT * FROM folders'),
@@ -70,6 +85,10 @@ export function createApi(db, itunes, library, bandcamp) {
       ) WHERE rn <= 4`),
     collection: db.prepare('SELECT * FROM collections WHERE id = ?'),
     insertCollection: db.prepare('INSERT INTO collections (folder_id, name) VALUES (?, ?)'),
+    copyCollection: db.prepare('INSERT INTO collections (folder_id, name, description, position, sort_mode) VALUES (?, ?, ?, ?, ?)'),
+    copyCollectionAlbums: db.prepare(`
+      INSERT INTO collection_albums (collection_id, album_id, position, original_position, added_at)
+      SELECT ?, album_id, position, original_position, added_at FROM collection_albums WHERE collection_id = ?`),
     deleteCollection: db.prepare('DELETE FROM collections WHERE id = ?'),
     collectionAlbums: db.prepare(`
       SELECT a.*, ca.position, ca.original_position, ca.added_at
@@ -157,9 +176,12 @@ export function createApi(db, itunes, library, bandcamp) {
     if ('name' in body) q.renameFolder.run(cleanName(body.name), folder.id);
     if ('parentId' in body) {
       const parentId = optionalFolderId(body.parentId);
-      // Evita meter una carpeta dentro de sí misma o de una de sus subcarpetas.
-      for (let p = parentId; p != null; p = q.folder.get(p)?.parent_id) {
+      // Evita meter una carpeta dentro de sí misma o de una de sus subcarpetas
+      // (con tope por si la base de datos ya tuviera un ciclo).
+      const seen = new Set();
+      for (let p = parentId; p != null && !seen.has(p); p = q.folder.get(p)?.parent_id) {
         if (p === folder.id) throw new HttpError(400, 'No puedes mover una carpeta dentro de sí misma.');
+        seen.add(p);
       }
       q.moveFolder.run(parentId, folder.id);
     }
@@ -221,6 +243,39 @@ export function createApi(db, itunes, library, bandcamp) {
     const c = requireCollection(toId(req.params.id));
     q.deleteCollection.run(c.id);
     res.json({ ok: true });
+  });
+
+  // Copia de una colección: misma carpeta, descripción, orden y discos, pero sin su origen
+  // (no queda enlazada a Record Club).
+  r.post('/collections/:id/duplicate', (req, res) => {
+    const c = requireCollection(toId(req.params.id));
+    const name = req.body?.name == null ? `${c.name.slice(0, 192)} (copia)` : cleanName(req.body.name);
+    const id = transaction(db, () => {
+      const info = q.copyCollection.run(c.folder_id, name, c.description, c.position, c.sort_mode);
+      const newId = Number(info.lastInsertRowid);
+      q.copyCollectionAlbums.run(newId, c.id);
+      return newId;
+    });
+    res.status(201).json({ id });
+  });
+
+  // Descarga la colección en el orden guardado: CSV (reimportable, con Excel) o texto «Artista – Álbum (Año)».
+  r.get('/collections/:id/export', (req, res) => {
+    const c = requireCollection(toId(req.params.id));
+    const format = String(req.query.format ?? 'csv').toLowerCase();
+    if (format !== 'csv' && format !== 'txt') throw new HttpError(400, 'Formato no válido. Usa csv o txt.');
+    const albums = sortAlbums(q.collectionAlbums.all(c.id).map(albumFromRow), c.sort_mode);
+    const oneLine = (v) => String(v ?? '').replace(/\s+/g, ' ').trim();
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Disposition', attachment(c.name, format, 'coleccion'));
+    if (format === 'csv') {
+      const rows = [['Posición', 'Artista', 'Álbum', 'Año', 'Enlace']];
+      albums.forEach((a, i) => rows.push([i + 1, oneLine(a.artist), oneLine(a.title), a.year ?? '', a.appleUrl || a.externalUrl || a.bandcampUrl || '']));
+      res.type('text/csv; charset=utf-8').send(csvDocument(rows));
+    } else {
+      const lines = albums.map((a) => `${oneLine(a.artist)} – ${oneLine(a.title)}${a.year ? ` (${a.year})` : ''}`);
+      res.type('text/plain; charset=utf-8').send(lines.length ? `${lines.join('\n')}\n` : '');
+    }
   });
 
   r.post('/collections/:id/albums', (req, res) => {
@@ -303,6 +358,38 @@ export function createApi(db, itunes, library, bandcamp) {
       transaction(db, () => ids.forEach((cid) => addAlbumToCollection(cid, album.id)));
     }
     res.status(201).json({ album, collectionIds: membershipOf(album.id) });
+  });
+
+  // Datos personales de un disco (cuerpo parcial):
+  //   listened: true|false (true conserva la fecha si ya estaba escuchado)  ·  listenedAt: 'AAAA-MM-DD' | ISO | null
+  //   rating: 1-5 | null  ·  notes: texto (máx. 5000) | null
+  r.patch('/albums/:id', (req, res) => {
+    const id = toAlbumId(req.params.id);
+    const row = q.album.get(id);
+    if (!row) throw new HttpError(404, 'El álbum no está en la biblioteca.');
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (!['listened', 'listenedAt', 'rating', 'notes'].some((k) => k in body)) throw new HttpError(400, 'No hay nada que cambiar.');
+    if ('listened' in body && 'listenedAt' in body) throw new HttpError(400, 'Usa «listened» o «listenedAt», no los dos.');
+    let { listened_at: listenedAt, rating, notes } = row;
+    if ('listened' in body) {
+      if (typeof body.listened !== 'boolean') throw new HttpError(400, '«listened» debe ser true o false.');
+      listenedAt = body.listened ? listenedAt ?? isoNow() : null;
+    }
+    if ('listenedAt' in body) listenedAt = toListenedAt(body.listenedAt);
+    if ('rating' in body) {
+      if (body.rating !== null && !(Number.isInteger(body.rating) && body.rating >= 1 && body.rating <= 5)) {
+        throw new HttpError(400, 'La valoración debe ser un número entero del 1 al 5 (o null para quitarla).');
+      }
+      rating = body.rating;
+    }
+    if ('notes' in body) {
+      if (body.notes !== null && typeof body.notes !== 'string') throw new HttpError(400, 'Las notas deben ser texto.');
+      const text = body.notes?.trim() ?? '';
+      if (text.length > 5000) throw new HttpError(400, 'Las notas son demasiado largas (máximo 5000 caracteres).');
+      notes = text || null;
+    }
+    q.setPersonal.run(listenedAt, rating, notes, id);
+    res.json({ album: albumFromRow(q.album.get(id)) });
   });
 
   r.put('/albums/:id/collections', (req, res) => {

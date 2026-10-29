@@ -36,7 +36,12 @@ export function createAuth(config) {
     const header = req.headers.cookie || '';
     for (const part of header.split(';')) {
       const [name, ...rest] = part.trim().split('=');
-      if (name === COOKIE) return decodeURIComponent(rest.join('='));
+      if (name !== COOKIE) continue;
+      try {
+        return decodeURIComponent(rest.join('='));
+      } catch {
+        return null; // cookie mal codificada: como si no hubiera sesión
+      }
     }
     return null;
   }
@@ -49,18 +54,27 @@ export function createAuth(config) {
     res.setHeader('Set-Cookie', parts.join('; '));
   }
 
-  // Freno sencillo contra fuerza bruta: 10 fallos por IP cada 15 minutos.
+  // Freno contra fuerza bruta: 10 fallos por IP cada 15 minutos y, por si la IP se puede falsear,
+  // 50 fallos en total en ese tiempo.
   const failures = new Map();
   const WINDOW = 15 * 60e3;
+  const PER_IP = 10;
+  const GLOBAL = 50;
+  let total = { first: 0, count: 0 };
+  const fresh = (f) => f && Date.now() - f.first <= WINDOW;
   function tooManyFailures(ip) {
+    if (fresh(total) && total.count >= GLOBAL) return true;
     const f = failures.get(ip);
-    if (!f || Date.now() - f.first > WINDOW) return false;
-    return f.count >= 10;
+    return fresh(f) && f.count >= PER_IP;
   }
   function recordFailure(ip) {
+    const now = Date.now();
+    for (const [k, f] of failures) if (!fresh(f)) failures.delete(k); // purga las caducadas
+    if (fresh(total)) total.count++;
+    else total = { first: now, count: 1 };
     const f = failures.get(ip);
-    if (!f || Date.now() - f.first > WINDOW) failures.set(ip, { first: Date.now(), count: 1 });
-    else f.count++;
+    if (f) f.count++;
+    else failures.set(ip, { first: now, count: 1 });
   }
 
   const router = express.Router();

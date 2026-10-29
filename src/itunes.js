@@ -72,6 +72,7 @@ export function createItunes(db, { country, perMinute }) {
     `INSERT INTO http_cache (key, body, fetched_at) VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET body = excluded.body, fetched_at = excluded.fetched_at`,
   );
+  const cacheDel = db.prepare('DELETE FROM http_cache WHERE key = ?');
 
   // Álbumes vistos recientemente en búsquedas: evita un lookup extra al guardarlos.
   const recent = new Map();
@@ -113,15 +114,24 @@ export function createItunes(db, { country, perMinute }) {
   }
 
   async function fetchJson(url, { ttl = DAY, interactive = true } = {}) {
-    const hit = cacheGet.get(url);
-    if (hit && Date.now() - hit.fetched_at < ttl) return JSON.parse(hit.body);
+    let hit = cacheGet.get(url);
+    let cached;
+    if (hit) {
+      try {
+        cached = JSON.parse(hit.body);
+      } catch {
+        cacheDel.run(url); // entrada dañada (p. ej. una página HTML): se olvida
+        hit = null;
+      }
+    }
+    if (hit && Date.now() - hit.fetched_at < ttl) return cached;
 
     const attempts = interactive ? 1 : 4;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
         await acquire({ interactive });
       } catch (err) {
-        if (hit) return JSON.parse(hit.body); // mejor datos viejos que nada
+        if (hit) return cached; // mejor datos viejos que nada
         throw err;
       }
       let res;
@@ -135,19 +145,26 @@ export function createItunes(db, { country, perMinute }) {
           await sleep(2000 * attempt);
           continue;
         }
-        if (hit) return JSON.parse(hit.body);
+        if (hit) return cached;
         throw new ItunesError('No se pudo conectar con Apple (iTunes Search API).');
       }
       if (res.status === 403 || res.status === 429 || res.status === 503) {
         pausedUntil = Date.now() + 60000 * attempt;
         if (attempt < attempts) continue;
-        if (hit) return JSON.parse(hit.body);
+        if (hit) return cached;
         throw new ItunesError('Apple está limitando las peticiones. Espera un minuto y vuelve a intentarlo.', 503);
       }
       if (!res.ok) throw new ItunesError(`Apple respondió con un error ${res.status}.`);
       const text = await res.text();
-      cacheSet.run(url, text, Date.now());
-      return JSON.parse(text);
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        if (hit) return cached;
+        throw new ItunesError('Apple ha devuelto una respuesta que no se entiende.');
+      }
+      cacheSet.run(url, text, Date.now()); // solo se guarda si es JSON válido
+      return data;
     }
     throw new ItunesError('No se pudo completar la petición a Apple.');
   }

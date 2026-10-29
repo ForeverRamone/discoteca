@@ -89,7 +89,8 @@ export function rowsToItems(rows, order = 'artist-title') {
   const items = [];
   let skipped = 0;
   for (const r of body) {
-    const cells = r.map((c) => String(c ?? '').trim());
+    // Quita el apóstrofo que se antepone a las celdas tipo «=…» al exportar a CSV (ver csv.js).
+    const cells = r.map((c) => String(c ?? '').trim().replace(/^'(?=[=+\-@])/, ''));
     let entry;
     if (hasHeader) {
       entry = { artist: cells[col.artist], title: cells[col.title], year: Number(cells[col.year]) || null };

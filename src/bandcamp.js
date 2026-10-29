@@ -1,3 +1,5 @@
+import { isIP } from 'node:net';
+
 // Integración con Bandcamp: buscar discos, leer la página de un álbum y su reproductor oficial.
 //
 // Bandcamp NO tiene API pública de búsqueda. Se usa el buscador interno de su web (el del
@@ -75,11 +77,14 @@ function hitToAlbum(r) {
 
 export const looksLikeBandcampLink = (input) => /bandcamp\.com\//i.test(String(input ?? ''));
 
+// Código numérico de una entidad -> carácter (los no válidos se descartan).
+const fromCode = (n) => (Number.isInteger(n) && n >= 0 && n <= 0x10ffff ? String.fromCodePoint(n) : '');
+
 const decode = (s) =>
   String(s ?? '')
     .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&#(\d+);/g, (_, n) => fromCode(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => fromCode(parseInt(n, 16)))
     .replace(/&amp;/g, '&');
 
 const meta = (html, attr, name) =>
@@ -89,7 +94,12 @@ const meta = (html, attr, name) =>
 // Convierte la página en un álbum con el mismo formato que los de Apple.
 // Los ID son negativos para no chocar nunca con los ID de catálogo de Apple Music.
 export function parseAlbumPage(html, url) {
-  const props = JSON.parse(meta(html, 'name', 'bc-page-properties') || '{}');
+  let props;
+  try {
+    props = JSON.parse(meta(html, 'name', 'bc-page-properties') || '{}') || {};
+  } catch {
+    throw new BandcampError('La página de Bandcamp no tiene el formato esperado.');
+  }
   const itemId = Number(props.item_id);
   if (!Number.isSafeInteger(itemId) || itemId <= 0) return null;
   const ogTitle = meta(html, 'property', 'og:title');
@@ -123,13 +133,70 @@ export function parseAlbumPage(html, url) {
   };
 }
 
+const MAX_BODY = 5 * 1024 * 1024;
+const MAX_REDIRECTS = 3;
+
+// Host al que no se debe ir nunca (red local o del propio servidor). Las IP literales se rechazan
+// todas: Bandcamp y los dominios propios de los artistas siempre usan nombres.
+function forbiddenHost(hostname) {
+  const h = hostname.toLowerCase().replace(/\.$/, '');
+  return isIP(h.replace(/^\[|\]$/g, '')) !== 0 || !h.includes('.') || h === 'localhost'
+    || /\.(localhost|local|internal|lan|home\.arpa)$/.test(h);
+}
+
+// fetch que sigue como mucho 3 redirecciones, solo a https y a hosts públicos: Bandcamp redirige a
+// veces a los dominios propios de los artistas, pero no debe poder llevarnos a la red interna.
+async function safeFetch(url, options) {
+  let current = url;
+  for (let hop = 0; ; hop++) {
+    const u = new URL(current);
+    if (u.protocol !== 'https:' || forbiddenHost(u.hostname)) throw new BandcampError('Bandcamp ha redirigido a una dirección no permitida.');
+    const res = await fetch(u, { ...options, redirect: 'manual' });
+    if (res.status < 300 || res.status >= 400 || res.status === 304) return res;
+    const location = res.headers.get('location');
+    await res.body?.cancel().catch(() => {});
+    if (!location) throw new BandcampError(`Bandcamp respondió con un error ${res.status}.`);
+    if (hop >= MAX_REDIRECTS) throw new BandcampError('Bandcamp ha redirigido demasiadas veces.');
+    current = new URL(location, u).href;
+    // Como haría el navegador: tras 301/302/303 un POST pasa a GET sin cuerpo.
+    if (res.status !== 307 && res.status !== 308 && options.method && options.method !== 'GET') {
+      options = { ...options, method: 'GET', body: undefined };
+    }
+  }
+}
+
+// Lee el cuerpo como texto, cortando si supera el tope.
+async function readText(res, max = MAX_BODY) {
+  if (Number(res.headers.get('content-length')) > max) {
+    await res.body?.cancel().catch(() => {});
+    throw new BandcampError('La respuesta de Bandcamp es demasiado grande.');
+  }
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of res.body ?? []) {
+    size += chunk.length;
+    if (size > max) {
+      await res.body.cancel().catch(() => {});
+      throw new BandcampError('La respuesta de Bandcamp es demasiado grande.');
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 export function createBandcamp(db, { delayMs = 1500 } = {}) {
   const cacheGet = db.prepare('SELECT body, fetched_at FROM http_cache WHERE key = ?');
   const cacheSet = db.prepare(
     `INSERT INTO http_cache (key, body, fetched_at) VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET body = excluded.body, fetched_at = excluded.fetched_at`,
   );
-  const recent = new Map(); // id -> álbum, para guardar sin volver a pedir la página
+  // id -> álbum, para guardar sin volver a pedir la página (con tope: se olvidan los más antiguos).
+  const recent = new Map();
+  const remember = (album) => {
+    recent.delete(album.id);
+    recent.set(album.id, album);
+    if (recent.size > 3000) recent.delete(recent.keys().next().value);
+  };
 
   let last = 0;
   let queue = Promise.resolve();
@@ -151,14 +218,15 @@ export function createBandcamp(db, { delayMs = 1500 } = {}) {
     const hit = cacheGet.get(key);
     if (hit && !force && Date.now() - hit.fetched_at < CACHE_TTL) {
       const album = JSON.parse(hit.body);
-      if (album) recent.set(album.id, album);
+      if (album) remember(album);
       return album;
     }
     await throttle();
     let res;
     try {
-      res = await fetch(url, { headers: { 'User-Agent': USER_AGENT, Accept: 'text/html' }, signal: AbortSignal.timeout(20000) });
-    } catch {
+      res = await safeFetch(url, { headers: { 'User-Agent': USER_AGENT, Accept: 'text/html' }, signal: AbortSignal.timeout(20000) });
+    } catch (err) {
+      if (err instanceof BandcampError) throw err;
       throw new BandcampError('No se pudo conectar con Bandcamp.');
     }
     if (res.status === 404 || res.status === 410) {
@@ -166,11 +234,11 @@ export function createBandcamp(db, { delayMs = 1500 } = {}) {
       return null;
     }
     if (!res.ok) throw new BandcampError(`Bandcamp respondió con un error ${res.status}.`);
-    const html = await res.text();
+    const html = await readText(res);
     if (/Client Challenge/i.test(html.slice(0, 5000))) throw new BandcampError('Bandcamp ha pedido una verificación anti-bots. Inténtalo más tarde.');
     const album = parseAlbumPage(html, url);
     cacheSet.run(key, JSON.stringify(album), Date.now());
-    if (album) recent.set(album.id, album);
+    if (album) remember(album);
     return album;
   }
 
@@ -189,24 +257,30 @@ export function createBandcamp(db, { delayMs = 1500 } = {}) {
       await throttle();
       let res;
       try {
-        res = await fetch(SEARCH_API, {
+        res = await safeFetch(SEARCH_API, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT, Accept: 'application/json' },
           // search_filter "a" = solo álbumes (ni artistas, ni pistas, ni merchandising).
           body: JSON.stringify({ search_text: text, search_filter: 'a', full_page: false, fan_id: null }),
           signal: AbortSignal.timeout(15000),
         });
-      } catch {
+      } catch (err) {
+        if (err instanceof BandcampError) throw err;
         throw new BandcampError('No se pudo conectar con Bandcamp.');
       }
       if (!res.ok) throw new BandcampError(`El buscador de Bandcamp respondió con un error ${res.status}.`);
-      const data = await res.json().catch(() => null);
+      let data = null;
+      try {
+        data = JSON.parse(await readText(res));
+      } catch (err) {
+        if (err instanceof BandcampError) throw err;
+      }
       if (!data) throw new BandcampError('El buscador de Bandcamp ha cambiado o no responde como se esperaba.');
       results = (data.auto?.results ?? []).filter((r) => r.type === 'a' && r.id && r.item_url_path);
       cacheSet.run(key, JSON.stringify(results), Date.now());
     }
     const albums = results.slice(0, limit).map(hitToAlbum).filter((a) => a.title && a.externalUrl);
-    for (const a of albums) if (!recent.has(a.id)) recent.set(a.id, a);
+    for (const a of albums) if (!recent.has(a.id)) remember(a);
     return albums;
   }
 

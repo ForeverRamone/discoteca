@@ -39,6 +39,15 @@ La base de datos se guarda en el volumen `discoteca-data`, que sobrevive a actua
 
 Para actualizar a una versión nueva: **Stacks › discoteca › Pull and redeploy**. Portainer descarga el código de GitHub y vuelve a construir la imagen (no hay imagen publicada en Docker Hub; por eso el `docker-compose.yml` lleva `pull_policy: build`).
 
+### Versiones
+
+Cada versión publicada tiene una etiqueta en Git (`v0.1.0`, `v0.2.0`…); los cambios de cada una están en [CHANGELOG.md](CHANGELOG.md). La rama `main` es siempre la última.
+
+- **Actualizar:** con la stack apuntando a `refs/heads/main` (lo normal), **Pull and redeploy**.
+- **Quedarte en una versión concreta o volver a una anterior:** en **Stacks › discoteca › Editor**, cambia *Repository reference* a `refs/tags/v0.1.0` (o la que quieras) y pulsa **Pull and redeploy**. Para volver a la última, pon de nuevo `refs/heads/main`.
+
+Antes de actualizar, descarga una copia en **Ajustes › Copia de seguridad**. Las versiones nuevas pueden añadir columnas a la base de datos; una versión anterior sigue abriéndola, pero no verá los datos nuevos (por ejemplo, las valoraciones de la 0.2).
+
 ## Variables de entorno
 
 | Variable | Por defecto | Descripción |

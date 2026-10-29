@@ -64,8 +64,17 @@ export function setupPullToRefresh(onRefresh, { content = () => document.getElem
     frame = requestAnimationFrame(() => render(pull));
   };
 
+  // Si el dedo empieza dentro de algo con desplazamiento propio (barra lateral, listas…) que no está
+  // arriba del todo, el gesto es para desplazar eso, no para actualizar.
+  const insideScrolled = (el) => {
+    for (; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {
+      if (el.scrollTop > 0) return true;
+    }
+    return false;
+  };
+
   window.addEventListener('touchstart', (e) => {
-    startY = !blocked() && window.scrollY <= 0 && e.touches.length === 1 ? e.touches[0].clientY : null;
+    startY = !blocked() && window.scrollY <= 0 && e.touches.length === 1 && !insideScrolled(e.target) ? e.touches[0].clientY : null;
   }, { passive: true });
 
   window.addEventListener('touchmove', (e) => {

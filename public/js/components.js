@@ -3,7 +3,7 @@ import { h, icon, openDialog, dialogHeader, promptText, confirmDialog, actionShe
 import { savedAlbumPlayer, pickBandcamp } from './bandcamp.js';
 import { lazyCover } from './images.js';
 import {
-  state, prefs, collator, changed, appleLink, appleWebUrl, linkTarget, artwork, normalize, isBandcamp, serviceName,
+  state, prefs, collator, changed, appleLink, appleWebUrl, linkTarget, artwork, normalize, isBandcamp, serviceName, sortAlbums,
   folderById, collectionById, childFolders, folderPath, descendantFolderIds, folderStats,
 } from './store.js';
 
@@ -97,36 +97,59 @@ export async function albumDetails(album, ctx = {}) {
     return showError(err);
   }
   const current = ctx.collectionId ? collectionById(ctx.collectionId) : null;
+  // Con artistId, el artista lleva a su discografía completa en Buscar.
+  const artistHref = album.artistId && `#/buscar?${new URLSearchParams({ artist: album.artistId, name: album.artist })}`;
   const action = await openDialog((close) =>
     h('div', { class: 'album-detail' },
       dialogHeader('Álbum', close),
       h('div', { class: 'dlg-body' },
         h('a', { class: 'detail-cover', href: appleLink(album), ...linkTarget(album) }, coverImg(album, 600)),
-        h('h3', { class: 'detail-title' }, album.title),
-        h('p', { class: 'detail-artist' }, album.artist),
-        h('p', { class: 'muted small' },
-          [album.year, album.genre, album.trackCount && `${album.trackCount} pistas`].filter(Boolean).join(' · ')),
-        h('a', { class: 'btn primary block', href: appleLink(album), ...linkTarget(album) }, icon(isBandcamp(album) ? 'external' : 'play'), `Abrir en ${serviceName(album)}`),
-        isBandcamp(album) && h('p', { class: 'muted small center' }, 'Este disco no está en Apple Music: se abre su página de Bandcamp.'),
-        bandcampBlock(album, close),
-        h('div', { class: 'chips' },
-          collectionIds.length
-            ? collectionIds.map((id) => collectionById(id)).filter(Boolean).map((c) =>
-              h('a', { class: 'chip', href: `#/c/${c.id}`, onclick: () => close() }, icon('stack'), c.name))
-            : h('span', { class: 'muted small' }, 'No está en ninguna colección.')),
-        h('div', { class: 'detail-actions' },
-          h('button', { class: 'btn', type: 'button', onclick: () => close('collections') }, icon('stack'), 'Colecciones…'),
-          current && h('button', { class: 'btn', type: 'button', onclick: () => close('remove') }, icon('close'), `Quitar de «${current.name}»`),
-          h('button', { class: 'btn', type: 'button', onclick: () => close('refresh') }, icon('refresh'), 'Actualizar datos'),
-          h('button', { class: 'btn danger-text', type: 'button', onclick: () => close('delete') }, icon('trash'), 'Eliminar de la biblioteca')))),
+        h('div', { class: 'detail-info' },
+          h('h3', { class: 'detail-title' }, album.title),
+          artistHref
+            ? h('a', { class: 'detail-artist', href: artistHref, title: 'Ver discografía completa', onclick: () => close() }, album.artist)
+            : h('p', { class: 'detail-artist' }, album.artist),
+          h('p', { class: 'muted small' },
+            [album.year, album.genre, album.trackCount && `${album.trackCount} pistas`].filter(Boolean).join(' · ')),
+          h('a', { class: 'btn primary block', href: appleLink(album), ...linkTarget(album) }, icon(isBandcamp(album) ? 'external' : 'play'), `Abrir en ${serviceName(album)}`),
+          isBandcamp(album) && h('p', { class: 'muted small center' }, 'Este disco no está en Apple Music: se abre su página de Bandcamp.'),
+          bandcampBlock(album, close),
+          h('div', { class: 'chips' },
+            collectionIds.length
+              ? collectionIds.map((id) => collectionById(id)).filter(Boolean).map((c) =>
+                h('a', { class: 'chip', href: `#/c/${c.id}`, onclick: () => close() }, icon('stack'), c.name))
+              : h('span', { class: 'muted small' }, 'No está en ninguna colección.')),
+          h('div', { class: 'detail-actions' },
+            h('button', { class: 'btn', type: 'button', onclick: () => close('collections') }, icon('stack'), 'Colecciones…'),
+            current && h('button', { class: 'btn', type: 'button', onclick: () => close('remove') }, icon('close'), `Quitar de «${current.name}»`),
+            h('button', { class: 'btn', type: 'button', onclick: () => close('refresh') }, icon('refresh'), 'Actualizar datos'),
+            h('button', { class: 'btn danger-text', type: 'button', onclick: () => close('delete') }, icon('trash'), 'Eliminar de la biblioteca'))))),
+    { className: 'album-dlg' },
   );
 
   try {
     if (action === 'collections') {
       await editAlbumCollections(album, collectionIds);
     } else if (action === 'remove') {
+      // Se guarda el orden actual para poder deshacer dejándolo todo como estaba.
+      const { albums: before } = await api(`/collections/${current.id}`);
+      const order = sortAlbums(before, 'position').map((a) => a.id);
       await api(`/collections/${current.id}/albums/${album.id}`, { method: 'DELETE' });
-      toast(`Quitado de «${current.name}»`);
+      toast(`Quitado de «${current.name}»`, {
+        action: {
+          label: 'Deshacer',
+          run: async () => {
+            try {
+              await api('/albums', { method: 'POST', body: { id: album.id, addTo: [current.id] } });
+              await api(`/collections/${current.id}/order`, { method: 'PUT', body: { albumIds: order } });
+              toast(`Vuelve a estar en «${current.name}»`);
+              await changed();
+            } catch (err) {
+              showError(err);
+            }
+          },
+        },
+      });
       await changed();
     } else if (action === 'refresh') {
       await api(`/albums/${album.id}/refresh`, { method: 'POST' });
@@ -314,14 +337,17 @@ export function collectionActions(collection) {
   });
 }
 
+// Devuelve true si la operación ha salido bien.
 async function mutate(fn, message) {
   try {
     await fn();
-    if (message) toast(message);
-    await changed();
   } catch (err) {
     showError(err);
+    return false;
   }
+  if (message) toast(message);
+  await changed().catch(showError);
+  return true;
 }
 
 async function renameFolder(folder) {
@@ -347,10 +373,12 @@ async function deleteFolder(folder) {
     danger: true,
   });
   if (!ok) return;
-  await mutate(() => api(`/folders/${folder.id}`, { method: 'DELETE' }), 'Carpeta eliminada');
-  if (location.hash.startsWith('#/f/') || location.hash.startsWith('#/c/')) {
-    location.hash = folder.parentId ? `#/f/${folder.parentId}` : '#/';
-  }
+  // Antes de borrar (después ya no estarán en el árbol): ¿la pantalla actual está dentro de esta carpeta?
+  const ids = descendantFolderIds(folder.id);
+  const [, kind, viewId] = location.hash.match(/^#\/([fc])\/(\d+)/) || [];
+  const inside = kind === 'f' ? ids.has(Number(viewId)) : kind === 'c' && ids.has(collectionById(Number(viewId))?.folderId);
+  if (!await mutate(() => api(`/folders/${folder.id}`, { method: 'DELETE' }), 'Carpeta eliminada')) return;
+  if (inside) location.hash = folder.parentId ? `#/f/${folder.parentId}` : '#/';
 }
 
 async function renameCollection(collection) {
@@ -372,7 +400,7 @@ async function deleteCollection(collection) {
     danger: true,
   });
   if (!ok) return;
-  await mutate(() => api(`/collections/${collection.id}`, { method: 'DELETE' }), 'Colección eliminada');
+  if (!await mutate(() => api(`/collections/${collection.id}`, { method: 'DELETE' }), 'Colección eliminada')) return;
   if (location.hash === `#/c/${collection.id}`) location.hash = collection.folderId ? `#/f/${collection.folderId}` : '#/';
 }
 

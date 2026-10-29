@@ -33,7 +33,11 @@ export function backupSection() {
     try {
       const res = await api('/backup/restore', { method: 'POST', body: backup });
       toast(`Restaurado: ${plural(res.counts.albums ?? 0, 'álbum', 'álbumes')}`);
-      setTimeout(() => location.assign('/#/'), 900);
+      // Recarga de verdad: desde #/ajustes, location.assign('/#/') solo cambiaría el hash y se verían datos viejos.
+      setTimeout(() => {
+        location.hash = '#/';
+        location.reload();
+      }, 900);
     } catch (err) {
       showError(err);
       restoreBtn.disabled = false;

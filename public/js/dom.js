@@ -56,6 +56,7 @@ const ICONS = {
   refresh: '<path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6"/>',
   download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
   logout: '<path d="M14 4h5a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-5M10 8l-4 4 4 4M6 12h10"/>',
+  reorder: '<path d="M8 20V4M4 8l4-4 4 4M16 4v16M12 16l4 4 4-4"/>',
 };
 
 export function icon(name, cls = '') {
@@ -65,14 +66,35 @@ export function icon(name, cls = '') {
 }
 
 // ---------- Avisos ----------
+// action: { label, run } añade un botón (p. ej. «Deshacer») y deja el aviso más tiempo en pantalla.
 let toastTimer;
-export function toast(message, { error = false } = {}) {
+let toastShownAt = 0;
+export function toast(message, { error = false, action = null } = {}) {
   const el = document.getElementById('toast');
+  const hide = () => el.classList.remove('show');
   el.textContent = message;
+  if (action) {
+    el.append(h('button', {
+      class: 'toast-action', type: 'button',
+      onclick: () => { clearTimeout(toastTimer); hide(); action.run(); },
+    }, action.label));
+  }
   el.classList.toggle('error', error);
+  el.classList.toggle('has-action', Boolean(action));
   el.classList.add('show');
+  toastShownAt = Date.now();
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), error ? 5000 : 2600);
+  toastTimer = setTimeout(hide, action ? 7000 : error ? 5000 : 2600);
+}
+
+// Al cambiar de pantalla, un error de la anterior ya no viene a cuento. Los de hace un instante
+// se dejan: suelen ser de la acción que acaba de llevarte a esta pantalla.
+export function hideErrorToast() {
+  const el = document.getElementById('toast');
+  if (el.classList.contains('error') && Date.now() - toastShownAt > 400) {
+    clearTimeout(toastTimer);
+    el.classList.remove('show');
+  }
 }
 
 export function showError(err) {

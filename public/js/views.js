@@ -137,7 +137,7 @@ function albumBrowser({ albums, sortMode, sortOptions, onSort, onReorder, viewKe
   const editBar = h('div', { class: 'edit-bar', hidden: true },
     h('span', { class: 'small' }, 'Arrastra los discos para ordenarlos (en el móvil, mantén pulsado y arrastra).'),
     h('span', { class: 'spacer' }),
-    h('button', { class: 'btn small', type: 'button', onclick: cancelEdit }, 'Cancelar'),
+    h('button', { class: 'btn small', type: 'button', 'data-cancel-edit': '', onclick: cancelEdit }, 'Cancelar'),
     saveBtn);
 
   const toggleWrap = h('span');
@@ -147,7 +147,7 @@ function albumBrowser({ albums, sortMode, sortOptions, onSort, onReorder, viewKe
     toggleWrap,
     slider,
     extraFilter,
-    onReorder && albums.length > 1 && h('button', { class: 'btn small', type: 'button', onclick: startEdit }, icon('move'), 'Reordenar'),
+    onReorder && albums.length > 1 && h('button', { class: 'btn small', type: 'button', onclick: startEdit }, icon('reorder'), 'Reordenar'),
     h('span', { class: 'spacer' }),
     count);
   const toolbar = h('div', { class: 'toolbar' }, filterInput, toolbarRow, editBar);
@@ -177,7 +177,10 @@ export function folderView(folderId) {
   if (!folders.length && !collections.length) {
     content = h('div', { class: 'empty' },
       h('p', null, folder ? 'Esta carpeta está vacía.' : 'Aún no tienes colecciones.'),
-      h('p', { class: 'muted' }, 'Crea una colección (por ejemplo «Modal») y, si quieres, agrúpala en carpetas como «Jazz». Después busca álbumes y añádelos.'));
+      h('p', { class: 'muted' }, 'Crea una colección (por ejemplo «Modal») y, si quieres, agrúpala en carpetas como «Jazz». Después busca álbumes y añádelos.'),
+      !folder && h('div', { class: 'actions' },
+        h('button', { class: 'btn primary', type: 'button', onclick: () => createCollection(null) }, icon('plus'), 'Nueva colección'),
+        h('a', { class: 'btn', href: '#/importar' }, icon('download'), 'Importar')));
   } else {
     content = h('div', { class: 'tiles' }, folders.map(folderTile), collections.map(collectionTile));
   }
@@ -214,13 +217,14 @@ export async function collectionView(id) {
       collection.sourceType === 'recordclub' && collection.sourceUrl && h('button', {
         class: 'btn', type: 'button',
         onclick: async (e) => {
-          e.currentTarget.disabled = true;
+          const btn = e.currentTarget; // tras el await, currentTarget ya es null
+          btn.disabled = true;
           try {
             const res = await api('/imports/sync', { method: 'POST', body: { collectionId: id } });
             location.hash = `#/importar/${res.id}`;
           } catch (err) {
             showError(err);
-            e.currentTarget.disabled = false;
+            btn.disabled = false;
           }
         },
       }, icon('refresh'), 'Actualizar desde Record Club')));
@@ -322,8 +326,16 @@ export async function searchView(params) {
 
   let items = [];
   let kind = 'search';
+  let error = null; // la última petición ha fallado
 
   function draw() {
+    if (error) {
+      status.textContent = '';
+      const retry = h('button', { class: 'btn', type: 'button', onclick: () => { retry.disabled = true; load(); } }, icon('refresh'), 'Reintentar');
+      return results.replaceChildren(h('div', { class: 'empty' },
+        h('p', null, error.status === 0 ? 'No se ha podido conectar con el servidor.' : error.message),
+        retry));
+    }
     const visible = kind === 'link' || source === 'bandcamp' || includeSingles ? items : items.filter((a) => !isSingleOrEp(a));
     const hidden = items.length - visible.length;
     status.textContent = items.length ? `${visible.length} resultado${visible.length === 1 ? '' : 's'}${hidden ? ` · ${hidden} singles/EP ocultos` : ''}` : '';
@@ -401,27 +413,29 @@ export async function searchView(params) {
 
   const node = h('div', null, header, results);
 
-  if (artistId) {
-    header.querySelector('h1').after(h('p', { class: 'muted' }, `Discografía de ${artistName}`));
-    status.textContent = 'Cargando…';
+  async function load() {
+    status.textContent = artistId ? 'Cargando…' : 'Buscando…';
+    error = null;
     try {
-      ({ results: items } = await api(`/artists/${artistId}/albums`));
-      kind = 'artist';
+      if (artistId) {
+        ({ results: items } = await api(`/artists/${artistId}/albums`));
+        kind = 'artist';
+      } else {
+        const res = await api(`${source === 'bandcamp' ? '/bandcamp/search' : '/search'}?q=${encodeURIComponent(q)}`);
+        items = res.results;
+        kind = res.kind;
+        if (res.error) toast(res.error, { error: true });
+      }
     } catch (err) {
-      showError(err);
+      items = [];
+      error = err;
     }
     draw();
-  } else if (q) {
-    status.textContent = 'Buscando…';
-    try {
-      const res = await api(`${source === 'bandcamp' ? '/bandcamp/search' : '/search'}?q=${encodeURIComponent(q)}`);
-      items = res.results;
-      kind = res.kind;
-      if (res.error) toast(res.error, { error: true });
-    } catch (err) {
-      showError(err);
-    }
-    draw();
+  }
+
+  if (artistId || q) {
+    if (artistId) header.querySelector('h1').after(h('p', { class: 'muted' }, `Discografía de ${artistName}`));
+    await load();
   } else {
     results.append(h('div', { class: 'empty' }, source === 'bandcamp'
       ? [

@@ -284,18 +284,28 @@ export async function importView() {
   // Historial, que se refresca solo mientras haya importaciones en marcha.
   const history = h('section');
   let historyTimer = null;
+  let running = new Set(); // importaciones en marcha en la última consulta
+  let failing = false;
   async function refreshHistory() {
     clearTimeout(historyTimer);
     if (!root.isConnected && history.childElementCount) return;
     try {
       const { jobs } = await api('/imports');
+      failing = false;
       fill(history, jobs.length ? [
         h('h2', { class: 'section-title' }, 'Importaciones'),
         h('div', { class: 'job-list' }, jobs.map(jobRow)),
       ] : null);
-      if (jobs.some((j) => j.status === 'fetching' || j.status === 'matching')) historyTimer = setTimeout(refreshHistory, 3000);
+      const now = new Set(jobs.filter((j) => j.status === 'fetching' || j.status === 'matching').map((j) => j.id));
+      // Alguna ha terminado: hay colecciones nuevas o con más discos en la barra lateral.
+      if ([...running].some((jobId) => !now.has(jobId))) changed().catch(() => {});
+      running = now;
+      if (running.size) historyTimer = setTimeout(refreshHistory, 3000);
     } catch (err) {
-      if (err.status !== 401) showError(err);
+      if (err.status === 401) return;
+      if (!failing) showError(err); // un solo aviso aunque siga sin conexión
+      failing = true;
+      if (running.size) historyTimer = setTimeout(refreshHistory, 5000);
     }
   }
 
@@ -360,24 +370,31 @@ function chooseAlbum(item, startSource = 'apple') {
           : 'Sin resultados. Prueba solo con el artista y pulsa su nombre para ver la discografía.'));
       }
     };
+    // Búsquedas y discografías comparten contador: solo se pinta la respuesta de la última petición.
+    let seq = 0;
     const run = async () => {
       const q = input.value.trim();
       if (q.length < 2) return;
-      status.textContent = source === 'bandcamp' ? 'Buscando en Bandcamp…' : 'Buscando en Apple Music…';
+      const mine = ++seq;
+      const where = source;
+      status.textContent = where === 'bandcamp' ? 'Buscando en Bandcamp…' : 'Buscando en Apple Music…';
       try {
-        const { results } = await api(`${source === 'bandcamp' ? '/bandcamp/search' : '/search'}?q=${encodeURIComponent(q)}`);
-        show(results, `${plural(results.length, 'resultado', 'resultados')} en ${source === 'bandcamp' ? 'Bandcamp' : 'Apple Music'}`);
+        const { results } = await api(`${where === 'bandcamp' ? '/bandcamp/search' : '/search'}?q=${encodeURIComponent(q)}`);
+        if (mine !== seq) return;
+        show(results, `${plural(results.length, 'resultado', 'resultados')} en ${where === 'bandcamp' ? 'Bandcamp' : 'Apple Music'}`);
       } catch (err) {
-        status.textContent = err.message;
+        if (mine === seq) status.textContent = err.message;
       }
     };
     async function loadArtist(id, name) {
+      const mine = ++seq;
       status.textContent = 'Cargando discografía…';
       try {
         const { results } = await api(`/artists/${id}/albums`);
+        if (mine !== seq) return;
         show(results, `Discografía de ${name}`);
       } catch (err) {
-        status.textContent = err.message;
+        if (mine === seq) status.textContent = err.message;
       }
     }
     const drawTabs = () => fill(tabs, ...[['apple', 'Apple Music'], ['bandcamp', 'Bandcamp']].map(([key, label]) =>

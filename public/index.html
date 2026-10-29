@@ -28,9 +28,17 @@
     </form>
   </section>
 
+  <section id="bootError" class="login" hidden>
+    <div class="login-card" role="alert">
+      <h1>Discoteca</h1>
+      <p id="bootErrorMsg" class="muted"></p>
+      <button id="bootRetry" class="btn primary" type="button">Reintentar</button>
+    </div>
+  </section>
+
   <div id="shell" class="shell" hidden>
     <header class="topbar">
-      <button id="menuBtn" class="icon-btn" type="button" aria-label="Abrir menú"></button>
+      <button id="menuBtn" class="icon-btn" type="button" aria-label="Menú" aria-controls="sidebar" aria-expanded="false"></button>
       <span id="topTitle" class="top-title">Discoteca</span>
       <a id="searchBtn" class="icon-btn" href="#/buscar" aria-label="Buscar en Apple Music"></a>
     </header>

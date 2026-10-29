@@ -72,18 +72,21 @@ export function pickBandcamp({ title = 'Buscar en Bandcamp', query = '' } = {}) 
     const input = h('input', { type: 'search', value: query, 'aria-label': 'Buscar en Bandcamp', placeholder: 'Artista y álbum, o enlace de Bandcamp', enterkeyhint: 'search' });
     const list = h('div', { class: 'choose-list' });
     const status = h('p', { class: 'muted small' });
+    let seq = 0; // solo vale la respuesta de la última búsqueda
     const run = async () => {
       const q = input.value.trim();
       if (q.length < 2) return;
+      const mine = ++seq;
       status.textContent = 'Buscando en Bandcamp…';
       list.replaceChildren();
       try {
         const { results } = await api(`/bandcamp/search?q=${encodeURIComponent(q)}`);
+        if (mine !== seq) return;
         status.textContent = results.length ? `${results.length} resultado${results.length === 1 ? '' : 's'} en Bandcamp` : 'Este disco no parece estar en Bandcamp.';
         fill(list, ...results.map((hit) =>
           bandcampRow(hit, h('button', { class: 'btn small primary', type: 'button', onclick: () => close(hit) }, 'Elegir'))));
       } catch (err) {
-        status.textContent = err.message;
+        if (mine === seq) status.textContent = err.message;
       }
     };
     if (query) setTimeout(run, 0);

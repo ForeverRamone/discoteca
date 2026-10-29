@@ -41,10 +41,10 @@ Para actualizar a una versión nueva: **Stacks › discoteca › Pull and redepl
 
 ### Versiones
 
-Cada versión publicada tiene una etiqueta en Git (`v0.1.0`, `v0.2.0`…); los cambios de cada una están en [CHANGELOG.md](CHANGELOG.md). La rama `main` es siempre la última.
+Cada versión publicada se conserva en su propia rama (`v0.1.0`, `v0.2.0`…), que no vuelve a cambiar; los cambios de cada una están en [CHANGELOG.md](CHANGELOG.md). La rama `main` es siempre la última.
 
 - **Actualizar:** con la stack apuntando a `refs/heads/main` (lo normal), **Pull and redeploy**.
-- **Quedarte en una versión concreta o volver a una anterior:** en **Stacks › discoteca › Editor**, cambia *Repository reference* a `refs/tags/v0.1.0` (o la que quieras) y pulsa **Pull and redeploy**. Para volver a la última, pon de nuevo `refs/heads/main`.
+- **Quedarte en una versión concreta o volver a una anterior:** en **Stacks › discoteca › Editor**, cambia *Repository reference* a `refs/heads/v0.1.0` (o la que quieras) y pulsa **Pull and redeploy**. Para volver a la última, pon de nuevo `refs/heads/main`.
 
 Antes de actualizar, descarga una copia en **Ajustes › Copia de seguridad**. Las versiones nuevas pueden añadir columnas a la base de datos; una versión anterior sigue abriéndola, pero no verá los datos nuevos (por ejemplo, las valoraciones de la 0.2).
 

@@ -77,6 +77,8 @@ export function createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, 
     otherUses: db.prepare(`
       SELECT COUNT(*) AS n FROM import_items i JOIN import_jobs j ON j.id = i.job_id
       WHERE j.collection_id = ? AND i.album_id = ? AND i.id <> ? AND i.status = 'matched'`),
+    revertFailed: db.prepare(`
+      UPDATE import_items SET status = 'pending' WHERE id = ? AND job_id = ? AND status = 'review' AND album_id IS NULL AND candidates IS NULL`),
     reviewItems: db.prepare("SELECT * FROM import_items WHERE job_id = ? AND status = 'review'"),
     notFoundItems: db.prepare("SELECT * FROM import_items WHERE job_id = ? AND status = 'not_found' ORDER BY position"),
 
@@ -304,7 +306,9 @@ export function createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, 
     }
     if (job.status !== 'matching') return;
 
-    let failures = 0; // discos seguidos que han fallado
+    // Discos seguidos que han fallado: pasan a revisión de forma provisional; si la racha llega a 3
+    // se devuelven a pendientes, para que «Reintentar» los vuelva a procesar.
+    let streak = [];
     for (;;) {
       job = q.job.get(id);
       if (!job) return; // borrado mientras se importaba
@@ -361,13 +365,19 @@ export function createImporter({ db, itunes, recordClub, bandcamp, musicbrainz, 
         if (!q.job.get(id)) return;
         try {
           await matchItem(job, w, albumFor);
-          failures = 0;
+          streak = [];
         } catch (err) {
-          if (++failures >= 3) throw err;
+          if (streak.length >= 2) {
+            // Fallo general (Apple caído, por ejemplo): este disco sigue pendiente y los anteriores
+            // de la racha vuelven a estarlo, salvo que ya los hayas resuelto a mano.
+            for (const itemId of streak) q.revertFailed.run(itemId, id);
+            throw err;
+          }
           console.error(`Importación ${id}, disco ${w.item.id}:`, err.message);
           if (q.item.get(w.item.id, id)?.status === 'pending') {
             q.updateItem.run('review', null, null, null, null, w.item.id);
           }
+          streak.push(w.item.id);
         }
       }
     }

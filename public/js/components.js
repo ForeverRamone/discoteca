@@ -251,13 +251,17 @@ export async function albumDetails(album, ctx = {}) {
       // Se guarda el orden actual para poder deshacer dejándolo todo como estaba.
       const { albums: before } = await api(`/collections/${current.id}`);
       const order = sortAlbums(before, 'position').map((a) => a.id);
+      const member = before.find((a) => a.id === album.id);
       await api(`/collections/${current.id}/albums/${album.id}`, { method: 'DELETE' });
       toast(`Quitado de «${current.name}»`, {
         action: {
           label: 'Deshacer',
           run: async () => {
             try {
-              await api('/albums', { method: 'POST', body: { id: album.id, addTo: [current.id] } });
+              await api(`/collections/${current.id}/albums/${album.id}/restore`, {
+                method: 'POST',
+                body: { originalPosition: member?.originalPosition ?? null, addedAt: member?.addedAt },
+              });
               await api(`/collections/${current.id}/order`, { method: 'PUT', body: { albumIds: order } });
               toast(`Vuelve a estar en «${current.name}»`);
               await changed();

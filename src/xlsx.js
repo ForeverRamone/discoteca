@@ -4,7 +4,7 @@ import zlib from 'node:zlib';
 
 const MAX_XML = 10 * 1024 * 1024;
 const MAX_ROWS = 20000;
-const MAX_CELLS = 1_000_000; // celdas (incluidos huecos) en toda la hoja
+const MAX_CELLS = 1_000_000; // celdas con valor en toda la hoja
 const MAX_COLS = 16384; // XFD, la última columna de Excel
 
 function openZip(buf) {
@@ -152,13 +152,16 @@ function readRows(buf) {
       else if (v != null) value = decode(v);
       const col = ref && /^[A-Z]+\d+$/.test(ref) ? colIndex(ref) : row.length;
       if (col >= MAX_COLS) throw new Error('El Excel tiene demasiadas columnas.');
+      // Excel guarda también celdas solo con formato (<c r="A30000" s="2"/>): no cuentan.
+      if (value === '') continue;
       row[col] = value;
+      if (++cells > MAX_CELLS) throw new Error('El Excel tiene demasiadas celdas.');
     }
-    if (!row.length) continue;
-    cells += row.length;
+    // Solo cuentan las filas con algún valor. Los huecos entre celdas no se rellenan (la fila queda
+    // dispersa): así la memoria depende de las celdas con valor, no de hasta qué columna llegan.
+    if (!row.some((c) => c.trim())) continue;
     if (rows.length >= MAX_ROWS) throw new Error(`El Excel tiene demasiadas filas (máximo ${MAX_ROWS.toLocaleString('es-ES')}).`);
-    if (cells > MAX_CELLS) throw new Error('El Excel tiene demasiadas celdas.');
-    rows.push(Array.from(row, (x) => x ?? ''));
+    rows.push(row);
   }
-  return rows.filter((r) => r.some((c) => String(c).trim()));
+  return rows;
 }

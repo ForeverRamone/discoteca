@@ -1,4 +1,5 @@
-import { isIP } from 'node:net';
+import dns from 'node:dns';
+import { isIP, BlockList } from 'node:net';
 
 // Integración con Bandcamp: buscar discos, leer la página de un álbum y su reproductor oficial.
 //
@@ -144,13 +145,46 @@ function forbiddenHost(hostname) {
     || /\.(localhost|local|internal|lan|home\.arpa)$/.test(h);
 }
 
+// Direcciones a las que nunca se conecta: loopback, redes privadas, enlace local, CGNAT, etc.
+const internal = new BlockList();
+for (const [net, prefix] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.168.0.0', 16]]) {
+  internal.addSubnet(net, prefix, 'ipv4');
+}
+for (const [net, prefix] of [['::', 128], ['::1', 128], ['fe80::', 10], ['fc00::', 7]]) internal.addSubnet(net, prefix, 'ipv6');
+
+function internalAddress(address) {
+  if (isIP(address) === 4) return internal.check(address, 'ipv4');
+  const a = new URL(`http://[${address}]/`).hostname.slice(1, -1); // forma canónica (::ffff:7f00:1)
+  const mapped = a.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mapped) {
+    const n = (parseInt(mapped[1], 16) << 16 >>> 0) + parseInt(mapped[2], 16);
+    return internal.check([n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.'), 'ipv4');
+  }
+  return internal.check(a, 'ipv6');
+}
+
+// Un nombre público puede apuntar a una IP interna (p. ej. 127.0.0.1.nip.io): se resuelve antes de
+// cada salto. Queda un riesgo residual de «DNS rebinding» (que el nombre cambie de IP entre esta
+// consulta y la conexión de fetch); se acepta, porque fijar la IP exigiría un agente HTTP propio.
+async function resolvesInternal(hostname) {
+  let addresses;
+  try {
+    addresses = await dns.promises.lookup(hostname, { all: true });
+  } catch {
+    throw new BandcampError('No se pudo conectar con Bandcamp.');
+  }
+  return !addresses.length || addresses.some((a) => internalAddress(a.address));
+}
+
 // fetch que sigue como mucho 3 redirecciones, solo a https y a hosts públicos: Bandcamp redirige a
 // veces a los dominios propios de los artistas, pero no debe poder llevarnos a la red interna.
 async function safeFetch(url, options) {
   let current = url;
   for (let hop = 0; ; hop++) {
     const u = new URL(current);
-    if (u.protocol !== 'https:' || forbiddenHost(u.hostname)) throw new BandcampError('Bandcamp ha redirigido a una dirección no permitida.');
+    if (u.protocol !== 'https:' || forbiddenHost(u.hostname) || (await resolvesInternal(u.hostname))) {
+      throw new BandcampError('Bandcamp ha redirigido a una dirección no permitida.');
+    }
     const res = await fetch(u, { ...options, redirect: 'manual' });
     if (res.status < 300 || res.status >= 400 || res.status === 304) return res;
     const location = res.headers.get('location');

@@ -55,7 +55,7 @@ Para actualizar a una versión nueva: **Stacks › discoteca › Pull and redepl
 
 Cambiar `APP_PASSWORD` cierra todas las sesiones abiertas.
 
-Contra los intentos de adivinar la contraseña, el inicio de sesión se bloquea 15 minutos tras 10 fallos desde una misma IP o 50 fallos en total.
+Contra los intentos de adivinar la contraseña, el inicio de sesión se bloquea 15 minutos tras 10 fallos desde una misma IP (en IPv6, desde una misma red /64). Además, en total solo se responde a un intento fallido por segundo: si alguien prueba desde muchas IP a la vez, sus intentos esperan turno. La contraseña correcta no espera, así que tú puedes seguir entrando.
 
 ## Desarrollo local
 

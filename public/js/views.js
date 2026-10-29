@@ -1,7 +1,7 @@
 import { api } from './api.js';
 import { h, icon, toast, showError, debounce } from './dom.js';
 import {
-  state, prefs, changed, appleLink, linkTarget, normalize, sortAlbums,
+  state, bus, prefs, changed, appleLink, linkTarget, normalize, sortAlbums,
   folderById, collectionById, childFolders, childCollections, folderPath,
 } from './store.js';
 import { enableReorder } from './reorder.js';
@@ -150,9 +150,12 @@ function albumBrowser({ albums, sortMode, sortOptions, onSort, onReorder, viewKe
     toolbarRow.hidden = false;
     if (filterInput) filterInput.hidden = false;
   }
+  // Al salir de reordenar, la app aplica el repintado que se aplazó si hubo cambios mientras tanto.
+  const editEnded = () => bus.dispatchEvent(new Event('editend'));
   function cancelEdit() {
     stopEdit();
     draw();
+    editEnded();
   }
   async function saveEdit() {
     const ids = [...grid.children].map((el) => Number(el.dataset.id));
@@ -167,6 +170,7 @@ function albumBrowser({ albums, sortMode, sortOptions, onSort, onReorder, viewKe
       sortSelect.value = 'position';
       stopEdit();
       draw();
+      editEnded();
       toast('Orden guardado');
     } catch (err) {
       showError(err);
@@ -534,6 +538,6 @@ export function settingsView({ onLogout }) {
       h('h2', null, 'Sesión'),
       h('button', { class: 'btn', type: 'button', onclick: onLogout }, icon('logout'), 'Cerrar sesión')),
 
-    h('p', { class: 'muted small' }, `Tienda de Apple Music: ${state.country.toUpperCase()} · Discoteca 0.1`));
+    h('p', { class: 'muted small' }, `Tienda de Apple Music: ${state.country.toUpperCase()} · Discoteca 0.2`));
   return { title: 'Ajustes', node };
 }

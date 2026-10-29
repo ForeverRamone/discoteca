@@ -12,8 +12,11 @@ export function csvCell(value) {
 export const csvDocument = (rows) => `\uFEFF${rows.map((r) => r.map(csvCell).join(',')).join('\r\n')}\r\n`;
 
 // Cabecera Content-Disposition con un nombre ASCII seguro y el original en UTF-8 (RFC 6266).
+// Se corta por puntos de código (no a mitad de un emoji) y se quitan los sustitutos sueltos, con los
+// que encodeURIComponent fallaría.
 export function attachment(name, ext, fallback = 'discoteca') {
-  const base = String(name ?? '').replace(/[\u0000-\u001f\u007f/\\:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || fallback;
-  const ascii = base.normalize('NFD').replace(/[^\w.-]+/g, '-').replace(/-+/g, '-').replace(/^[-.]+|-+$/g, '') || fallback;
+  const clean = String(name ?? '').replace(/[\u0000-\u001f\u007f/\\:*?"<>|]+/g, ' ').replace(/\p{Cs}/gu, '').replace(/\s+/g, ' ').trim();
+  const base = Array.from(clean).slice(0, 80).join('').trim() || fallback;
+  const ascii = base.normalize('NFD').replace(/\p{M}+/gu, '').replace(/[^\w.-]+/g, '-').replace(/-+/g, '-').replace(/^[-.]+|-+$/g, '') || fallback;
   return `attachment; filename="${ascii}.${ext}"; filename*=UTF-8''${encodeURIComponent(`${base}.${ext}`).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`;
 }

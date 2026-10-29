@@ -1,6 +1,6 @@
 {
   "name": "discoteca",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Organiza álbumes completos de Apple Music en colecciones y carpetas. Autoalojada.",
   "private": true,
   "license": "MIT",

@@ -78,7 +78,7 @@ const HEADER = {
 // Filas (de CSV o Excel) -> discos. Usa la cabecera si existe; si no, columnas artista, álbum, año.
 export function rowsToItems(rows, order = 'artist-title') {
   if (!rows.length) return { items: [], skipped: 0 };
-  const head = rows[0].map((c) => String(c ?? '').trim());
+  const head = Array.from(rows[0], (c) => String(c ?? '').trim()); // las filas de Excel pueden tener huecos
   const col = {};
   for (const [key, re] of Object.entries(HEADER)) {
     const i = head.findIndex((h) => re.test(h));

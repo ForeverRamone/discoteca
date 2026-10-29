@@ -10,10 +10,21 @@ const SORT_MODES = new Set(SORTS);
 const isoNow = () => new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 
 // Fecha de escucha: «AAAA-MM-DD» o fecha y hora ISO 8601; se guarda en UTC («AAAA-MM-DDTHH:MM:SSZ»).
+// Las fechas imposibles (2024-02-30) se rechazan en vez de pasar al mes siguiente, y una hora sin
+// zona se toma como UTC (no como la hora local del servidor).
 function toListenedAt(value) {
   if (value === null) return null;
   const s = String(value ?? '').trim();
-  const t = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/.test(s) ? Date.parse(s) : NaN;
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(\.\d+)?)?(Z|([+-])(\d{2}):?(\d{2}))?)?$/);
+  let t = NaN;
+  if (m) {
+    const [, y, mo, d, h = '00', mi = '00', sec = '00', frac = '', zone, sign, zh, zm] = m;
+    const day = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
+    const validDate = day.getUTCFullYear() === Number(y) && day.getUTCMonth() === Number(mo) - 1 && day.getUTCDate() === Number(d);
+    const validTime = Number(h) < 24 && Number(mi) < 60 && Number(sec) < 60 && (!sign || (Number(zh) < 24 && Number(zm) < 60));
+    const offset = !zone || zone === 'Z' ? 'Z' : `${sign}${zh}:${zm}`;
+    if (validDate && validTime) t = Date.parse(`${y}-${mo}-${d}T${h}:${mi}:${sec}${frac.slice(0, 4)}${offset}`);
+  }
   if (!Number.isFinite(t) || t < Date.UTC(1900, 0, 1) || t > Date.now() + 864e5) {
     throw new HttpError(400, 'Fecha de escucha no válida. Usa el formato AAAA-MM-DD.');
   }
@@ -249,7 +260,7 @@ export function createApi(db, itunes, library, bandcamp) {
   // (no queda enlazada a Record Club).
   r.post('/collections/:id/duplicate', (req, res) => {
     const c = requireCollection(toId(req.params.id));
-    const name = req.body?.name == null ? `${c.name.slice(0, 192)} (copia)` : cleanName(req.body.name);
+    const name = req.body?.name == null ? `${Array.from(c.name).slice(0, 192).join('')} (copia)` : cleanName(req.body.name);
     const id = transaction(db, () => {
       const info = q.copyCollection.run(c.folder_id, name, c.description, c.position, c.sort_mode);
       const newId = Number(info.lastInsertRowid);
@@ -287,6 +298,25 @@ export function createApi(db, itunes, library, bandcamp) {
         addAlbumToCollection(c.id, id);
       }
     });
+    res.json({ ok: true });
+  });
+
+  // Deshacer «Quitar de la colección»: vuelve a meter el disco con su posición original y su fecha
+  // de añadido (las colecciones de Record Club dependen de la posición original al actualizarse).
+  const restoreMember = db.prepare(`
+    INSERT OR IGNORE INTO collection_albums (collection_id, album_id, position, original_position, added_at)
+    VALUES (?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM collection_albums WHERE collection_id = ?), ?, ?)`);
+  r.post('/collections/:id/albums/:albumId/restore', (req, res) => {
+    const c = requireCollection(toId(req.params.id));
+    const albumId = toAlbumId(req.params.albumId);
+    if (!q.album.get(albumId)) throw new HttpError(404, 'El álbum no está en la biblioteca.');
+    const { originalPosition = null, addedAt } = req.body || {};
+    if (originalPosition !== null && !(Number.isSafeInteger(originalPosition) && originalPosition >= 0)) {
+      throw new HttpError(400, 'Posición original no válida.');
+    }
+    const added = typeof addedAt === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(addedAt) ? addedAt : isoNow();
+    restoreMember.run(c.id, albumId, c.id, originalPosition, added);
+    q.touchCollection.run(c.id);
     res.json({ ok: true });
   });
 

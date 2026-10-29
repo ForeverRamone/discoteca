@@ -14,6 +14,7 @@ const sidebar = $('sidebar');
 
 function showLogin() {
   $('shell').hidden = true;
+  $('bootError').hidden = true;
   $('login').hidden = false;
   setTimeout(() => $('loginPassword').focus(), 50);
 }
@@ -69,8 +70,15 @@ function setLoading(on) {
   }
 }
 
-// Modo reordenar activo: repintar la vista perdería el orden sin guardar.
+// Modo reordenar activo: repintar la vista perdería el orden sin guardar. El repintado se aplaza
+// hasta que se sale de ese modo (guardando o cancelando).
 const editing = () => Boolean(main.querySelector('.editing'));
+let repaintPending = false;
+bus.addEventListener('editend', () => {
+  if (!repaintPending) return;
+  repaintPending = false;
+  route({ keepScroll: true });
+});
 
 function parseHash() {
   const raw = location.hash.slice(1) || '/';
@@ -81,6 +89,7 @@ function parseHash() {
 let routeSeq = 0;
 async function route({ keepScroll = false } = {}) {
   const seq = ++routeSeq;
+  repaintPending = false;
   const scrollY = window.scrollY;
   setDrawer(false);
   highlightSidebar(sidebar, location.hash || '#/');
@@ -134,8 +143,11 @@ window.addEventListener('hashchange', () => {
 bus.addEventListener('change', () => {
   renderSidebar(sidebar);
   // Las pantallas de búsqueda e importación se actualizan solas, y mientras reordenas no se toca la vista.
-  if (!/^#\/(buscar|importar)/.test(location.hash) && !editing()) route({ keepScroll: true });
-  else highlightSidebar(sidebar, location.hash || '#/');
+  if (/^#\/(buscar|importar)/.test(location.hash)) highlightSidebar(sidebar, location.hash || '#/');
+  else if (editing()) {
+    repaintPending = true;
+    highlightSidebar(sidebar, location.hash || '#/');
+  } else route({ keepScroll: true });
 });
 
 // ---------- Arranque ----------
@@ -171,8 +183,10 @@ async function refreshAll({ quiet = false, silentSuccess = false } = {}) {
   try {
     await loadTree();
     renderSidebar(sidebar);
-    if (editing()) highlightSidebar(sidebar, location.hash || '#/');
-    else await route({ keepScroll: true });
+    if (editing()) {
+      repaintPending = true;
+      highlightSidebar(sidebar, location.hash || '#/');
+    } else await route({ keepScroll: true });
     if (!quiet && !silentSuccess) toast('Actualizado');
   } catch (err) {
     if (!quiet) showError(err);

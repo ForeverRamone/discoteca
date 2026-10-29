@@ -8,7 +8,7 @@ import { enableReorder } from './reorder.js';
 import { hitPlayer } from './bandcamp.js';
 import { backupSection } from './backup.js';
 import {
-  albumGrid, coverImg, pickCollections, createFolder, createCollection,
+  albumGrid, albumDetails, coverImg, pickCollections, createFolder, createCollection,
   folderActions, collectionActions, collectionTile, folderTile,
 } from './components.js';
 
@@ -51,39 +51,77 @@ function albumBrowser({ albums, sortMode, sortOptions, onSort, onReorder, viewKe
   let filterText = '';
   let grid;
 
+  let listenFilter = 'all';
+  let onlyLoose = false;
+  let onlyShared = false;
+  let provider = 'all';
+  let visible = [];
+  let lastRandom = null;
+
   const filterInput = filterable && h('input', {
     type: 'search', class: 'filter', placeholder: 'Filtrar por título, artista, género o año', 'aria-label': 'Filtrar álbumes',
     oninput: debounce((e) => { filterText = normalize(e.target.value.trim()); draw(); }, 150),
   });
-  const extraFilter = filterable === 'library'
-    ? [
+  const listenSelect = filterable && select([['all', 'Todos'], ['pending', 'Pendientes'], ['listened', 'Escuchados']], 'all',
+    (v) => { listenFilter = v; draw(); }, 'Escuchados');
+  // «Solo sin colección» y «En varias colecciones» se excluyen entre sí.
+  const looseCheck = h('input', { type: 'checkbox', onchange: (e) => { onlyLoose = e.target.checked; if (onlyLoose) onlyShared = sharedCheck.checked = false; draw(); } });
+  const sharedCheck = h('input', { type: 'checkbox', onchange: (e) => { onlyShared = e.target.checked; if (onlyShared) onlyLoose = looseCheck.checked = false; draw(); } });
+  const extraFilter = [
+    listenSelect,
+    filterable === 'library' && [
       select([['all', 'Todos los orígenes'], ['apple', 'Apple Music'], ['bandcamp', 'Bandcamp']], 'all',
         (v) => { provider = v; draw(); }, 'Origen'),
-      h('label', { class: 'check' }, h('input', { type: 'checkbox', onchange: (e) => { onlyLoose = e.target.checked; draw(); } }), 'Solo sin colección'),
-    ]
-    : null;
-  let onlyLoose = false;
-  let provider = 'all';
+      h('label', { class: 'check' }, looseCheck, 'Solo sin colección'),
+      h('label', { class: 'check' }, sharedCheck, 'En varias colecciones'),
+    ],
+  ];
 
   const slider = sizeSlider((size) => grid?.style.setProperty('--cover', `${size}px`));
+
+  // Al cambiar la ficha de un disco: si afecta al orden o al filtro se repinta todo; si no, solo su tarjeta.
+  const albumChanged = (album) => {
+    if (!editing && (sort === 'rating' || sort === 'listened' || listenFilter !== 'all')) draw();
+    else grid?.updateAlbum(album);
+  };
+  const fullCtx = () => ({ ...ctx, editing, numbered: !editing && (sort === 'position' || sort === 'original'), onAlbumChange: albumChanged });
 
   function draw() {
     let list = albums;
     if (filterText) list = list.filter((a) => normalize(`${a.title} ${a.artist} ${a.genre ?? ''} ${a.year ?? ''}`).includes(filterText));
+    if (listenFilter !== 'all') list = list.filter((a) => Boolean(a.listenedAt) === (listenFilter === 'listened'));
     if (onlyLoose) list = list.filter((a) => !a.collectionCount);
+    if (onlyShared) list = list.filter((a) => a.collectionCount > 1);
     if (provider !== 'all') list = list.filter((a) => (a.provider || 'apple') === provider);
     list = sortAlbums(list, sort);
+    visible = list;
     count.textContent = `${list.length} álbum${list.length === 1 ? '' : 'es'}${list.length !== albums.length ? ` de ${albums.length}` : ''}`;
     slider.hidden = mode !== 'grid';
+    randomBtn.disabled = !list.length;
     toggleWrap.replaceChildren(viewToggle(mode, (m) => { mode = m; prefs.set(`view:${viewKey}`, m); draw(); }));
     if (!albums.length) return body.replaceChildren(emptyNode);
     if (!list.length) return body.replaceChildren(h('p', { class: 'empty' }, 'Ningún álbum coincide con el filtro.'));
-    grid = albumGrid(list, {
-      mode,
-      size: prefs.get('gridSize', 160),
-      ctx: { ...ctx, editing, numbered: !editing && (sort === 'position' || sort === 'original') },
-    });
+    grid = albumGrid(list, { mode, size: prefs.get('gridSize', 160), ctx: fullCtx() });
     body.replaceChildren(grid);
+  }
+
+  // Un disco al azar de los que se ven ahora (con el filtro aplicado), sin repetir el último.
+  function randomAlbum() {
+    const pool = visible.length > 1 ? visible.filter((a) => a.id !== lastRandom) : visible;
+    const album = pool[Math.floor(Math.random() * pool.length)];
+    if (!album) return;
+    lastRandom = album.id;
+    albumDetails(album, fullCtx());
+  }
+
+  // Reordenar con un filtro activo guardaría solo los discos visibles: antes se quita el filtro.
+  function clearFilters() {
+    const active = filterText || listenFilter !== 'all';
+    if (filterInput) filterInput.value = '';
+    if (listenSelect) listenSelect.value = 'all';
+    filterText = '';
+    listenFilter = 'all';
+    return active;
   }
 
   // ---------- Reordenar arrastrando ----------
@@ -91,8 +129,10 @@ function albumBrowser({ albums, sortMode, sortOptions, onSort, onReorder, viewKe
   let sortable = null;
 
   async function startEdit() {
+    if (clearFilters()) toast('Filtro quitado para reordenar');
     editing = true;
     toolbarRow.hidden = true;
+    if (filterInput) filterInput.hidden = true;
     editBar.hidden = false;
     draw(); // parte del orden que estás viendo
     try {
@@ -108,6 +148,7 @@ function albumBrowser({ albums, sortMode, sortOptions, onSort, onReorder, viewKe
     sortable = null;
     editBar.hidden = true;
     toolbarRow.hidden = false;
+    if (filterInput) filterInput.hidden = false;
   }
   function cancelEdit() {
     stopEdit();
@@ -141,6 +182,8 @@ function albumBrowser({ albums, sortMode, sortOptions, onSort, onReorder, viewKe
     saveBtn);
 
   const toggleWrap = h('span');
+  const randomBtn = h('button', { class: 'btn small random-btn', type: 'button', title: 'Abre un disco al azar de los que se ven', 'aria-label': 'Disco al azar', onclick: randomAlbum },
+    icon('dice'), h('span', { class: 'btn-label' }, 'Disco al azar'));
   const sortSelect = select(sortOptions, sort, (v) => { sort = v; onSort?.(v); draw(); }, 'Ordenar por');
   const toolbarRow = h('div', { class: 'toolbar-row' },
     sortSelect,
@@ -148,6 +191,7 @@ function albumBrowser({ albums, sortMode, sortOptions, onSort, onReorder, viewKe
     slider,
     extraFilter,
     onReorder && albums.length > 1 && h('button', { class: 'btn small', type: 'button', onclick: startEdit }, icon('reorder'), 'Reordenar'),
+    albums.length > 0 && randomBtn,
     h('span', { class: 'spacer' }),
     count);
   const toolbar = h('div', { class: 'toolbar' }, filterInput, toolbarRow, editBar);
@@ -196,6 +240,8 @@ const COLLECTION_SORTS = [
   ['year', 'Año'],
   ['title', 'Título'],
   ['added', 'Añadidos recientemente'],
+  ['rating', 'Valoración'],
+  ['listened', 'Escuchados recientemente'],
 ];
 
 export async function collectionView(id) {
@@ -246,6 +292,7 @@ export async function collectionView(id) {
     viewKey: `c${id}`,
     ctx: { collectionId: id },
     emptyNode: empty,
+    filterable: true,
   });
   return { title: collection.name, node: h('div', null, header, browser) };
 }
@@ -263,7 +310,7 @@ export async function libraryView() {
   const browser = albumBrowser({
     albums,
     sortMode: prefs.get('librarySort', 'added'),
-    sortOptions: [['added', 'Añadidos recientemente'], ['artist', 'Artista'], ['year', 'Año'], ['title', 'Título']],
+    sortOptions: [['added', 'Añadidos recientemente'], ['artist', 'Artista'], ['year', 'Año'], ['title', 'Título'], ['rating', 'Valoración'], ['listened', 'Escuchados recientemente']],
     onSort: (v) => prefs.set('librarySort', v),
     viewKey: 'library',
     ctx: {},

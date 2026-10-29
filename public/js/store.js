@@ -123,16 +123,20 @@ export function artwork(url, size) {
 export const normalize = (s) =>
   String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
+// Igual que sortAlbums de src/library.js. rating: mejor valorados primero, sin valorar al final.
+// listened: escuchados más recientemente primero, no escuchados al final. Empates: por posición.
 export function sortAlbums(albums, mode) {
-  const list = [...albums];
+  const byPosition = (a, b) => (a.position ?? 0) - (b.position ?? 0);
   const byArtist = (a, b) => collator.compare(a.artist, b.artist) || (a.year ?? 0) - (b.year ?? 0) || collator.compare(a.title, b.title);
   const cmp = {
-    position: (a, b) => (a.position ?? 0) - (b.position ?? 0),
+    position: byPosition,
     original: (a, b) => (a.originalPosition ?? a.position ?? 0) - (b.originalPosition ?? b.position ?? 0),
     artist: byArtist,
     year: (a, b) => (a.year ?? 9999) - (b.year ?? 9999) || byArtist(a, b),
     title: (a, b) => collator.compare(a.title, b.title),
-    added: (a, b) => String(b.addedAt ?? b.savedAt).localeCompare(String(a.addedAt ?? a.savedAt)) || (a.position ?? 0) - (b.position ?? 0),
+    added: (a, b) => String(b.addedAt ?? b.savedAt).localeCompare(String(a.addedAt ?? a.savedAt)) || byPosition(a, b),
+    rating: (a, b) => (b.rating ?? 0) - (a.rating ?? 0) || byPosition(a, b),
+    listened: (a, b) => String(b.listenedAt ?? '').localeCompare(String(a.listenedAt ?? '')) || byPosition(a, b),
   }[mode];
-  return cmp ? list.sort(cmp) : list;
+  return cmp ? [...albums].sort(cmp) : [...albums];
 }

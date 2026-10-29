@@ -24,6 +24,27 @@ function coverImgOnly(album) {
 
 const subtitle = (a) => [a.artist, a.year].filter(Boolean).join(' · ');
 
+// Fecha de escucha legible. Las fechas elegidas a mano llegan como medianoche UTC: se muestran tal cual.
+const isDateOnly = (iso) => /T00:00:00Z$/.test(iso);
+export function listenedDate(iso, opts = { day: 'numeric', month: 'long', year: 'numeric' }) {
+  return new Date(iso).toLocaleDateString('es-ES', { ...opts, timeZone: isDateOnly(iso) ? 'UTC' : undefined });
+}
+// Valor AAAA-MM-DD para <input type="date"> (día local, salvo fechas elegidas a mano).
+function dateInputValue(iso) {
+  if (isDateOnly(iso)) return iso.slice(0, 10);
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Marcas discretas de escuchado y valoración junto al artista.
+function albumMarks(album) {
+  if (!album.listenedAt && !album.rating) return null;
+  return h('span', { class: 'marks' },
+    album.listenedAt && h('span', { class: 'mark-listened', role: 'img', 'aria-label': 'Escuchado', title: `Escuchado el ${listenedDate(album.listenedAt)}` }, icon('headphones')),
+    album.rating && h('span', { class: 'mark-rating', role: 'img', 'aria-label': `Valoración: ${album.rating} de 5`, title: `${album.rating} de 5` },
+      Array.from({ length: album.rating }, () => icon('star'))));
+}
+
 // Toque en la portada: abre Apple Music directamente o muestra la ficha, según los ajustes.
 function coverTap(album, ctx, child, cls = 'cover') {
   if (ctx.editing) return h('div', { class: cls }, child); // en modo reordenar no se abre nada
@@ -39,7 +60,7 @@ function albumCard(album, ctx, size) {
     h('div', { class: 'card-meta' },
       h('button', { class: 'card-text', type: 'button', onclick: () => albumDetails(album, ctx) },
         h('span', { class: 'card-title' }, album.title),
-        h('span', { class: 'card-sub' }, subtitle(album))),
+        h('span', { class: 'card-sub' }, albumMarks(album), subtitle(album))),
       h('button', { class: 'icon-btn small', type: 'button', 'aria-label': 'Más opciones', onclick: () => albumDetails(album, ctx) }, icon('more'))));
 }
 
@@ -49,7 +70,7 @@ function albumRow(album, ctx, index) {
     coverTap(album, ctx, coverImg(album, 64), 'row-cover'),
     h('button', { class: 'row-text', type: 'button', onclick: () => albumDetails(album, ctx) },
       h('span', { class: 'row-title' }, album.title),
-      h('span', { class: 'row-sub' }, album.artist)),
+      h('span', { class: 'row-sub' }, albumMarks(album), album.artist)),
     h('span', { class: 'row-year' }, album.year ?? ''),
     h('a', { class: 'icon-btn small', href: appleLink(album), ...linkTarget(album), 'aria-label': `Abrir en ${serviceName(album)}` }, icon(isBandcamp(album) ? 'external' : 'play')),
     h('button', { class: 'icon-btn small', type: 'button', 'aria-label': 'Más opciones', onclick: () => albumDetails(album, ctx) }, icon('more')));
@@ -58,14 +79,20 @@ function albumRow(album, ctx, index) {
 // Pinta en tandas para que listas de cientos de discos no bloqueen la pantalla.
 export function albumGrid(albums, { mode = 'grid', size = 160, ctx = {} } = {}) {
   const wrap = h('div', { class: `${mode === 'grid' ? 'album-grid' : 'album-list'}${ctx.editing ? ' editing' : ''}`, vars: { '--cover': `${size}px` } });
+  const item = (album, index) => (mode === 'grid' ? albumCard(album, ctx, size) : albumRow(album, ctx, index));
   let i = 0;
   const batch = () => {
     // Al reordenar se pinta todo de una vez para poder arrastrar a cualquier posición.
     const end = ctx.editing ? albums.length : Math.min(i + 120, albums.length);
-    for (; i < end; i++) wrap.append(mode === 'grid' ? albumCard(albums[i], ctx, size) : albumRow(albums[i], ctx, i));
+    for (; i < end; i++) wrap.append(item(albums[i], i));
     if (i < albums.length) requestAnimationFrame(batch);
   };
   batch();
+  // Vuelve a pintar solo la tarjeta de un álbum, en su sitio (también mientras se reordena).
+  wrap.updateAlbum = (album) => {
+    const el = [...wrap.children].find((c) => Number(c.dataset.id) === album.id);
+    el?.replaceWith(item(album, [...wrap.children].indexOf(el)));
+  };
   return wrap;
 }
 
@@ -87,7 +114,89 @@ function bandcampBlock(album, close) {
     panel);
 }
 
+// Escuchado, valoración y notas. Cada cambio se guarda al momento; onSaved recibe el álbum actualizado.
+function personalBlock(album, onSaved) {
+  let busy = false;
+  async function save(body, message) {
+    if (busy) return false;
+    busy = true;
+    wrap.classList.add('busy');
+    try {
+      const res = await api(`/albums/${album.id}`, { method: 'PATCH', body });
+      const { listenedAt, rating, notes } = res.album;
+      Object.assign(album, { listenedAt, rating, notes });
+      onSaved(album);
+      if (message) toast(message);
+      return true;
+    } catch (err) {
+      showError(err);
+      return false;
+    } finally {
+      busy = false;
+      wrap.classList.remove('busy');
+      draw();
+    }
+  }
+
+  // Escuchado: el botón conmuta; con fecha, se puede cambiar el día.
+  const listenBtn = h('button', {
+    class: 'btn small listen-btn', type: 'button',
+    onclick: () => save({ listened: !album.listenedAt }, album.listenedAt ? 'Marcado como pendiente' : 'Marcado como escuchado'),
+  });
+  const dateInput = h('input', {
+    type: 'date', class: 'listen-date', 'aria-label': 'Fecha de escucha',
+    onchange: (e) => e.target.value && save({ listenedAt: e.target.value }, 'Fecha de escucha guardada'),
+  });
+
+  // Valoración: pulsar la estrella actual la quita.
+  const stars = [1, 2, 3, 4, 5].map((n) => h('button', {
+    class: 'star', type: 'button', 'aria-label': `${n} estrella${n === 1 ? '' : 's'}`,
+    onclick: () => save({ rating: album.rating === n ? null : n }, album.rating === n ? 'Valoración quitada' : `Valorado con ${n} de 5`),
+  }, icon('star')));
+
+  // Notas: se guardan al salir del cuadro, con el botón o al cerrar la ficha.
+  const notes = h('textarea', {
+    class: 'notes', rows: 3, maxlength: 5000, placeholder: 'Tus notas sobre el disco', 'aria-label': 'Notas',
+    oninput: () => draw(),
+    onblur: () => flushNotes(),
+  });
+  notes.value = album.notes ?? '';
+  const notesBtn = h('button', { class: 'btn small', type: 'button', onclick: () => flushNotes() }, icon('check'), 'Guardar notas');
+  const notesDirty = () => notes.value.trim() !== (album.notes ?? '');
+  async function flushNotes() {
+    if (!notesDirty()) return;
+    const text = notes.value.trim();
+    if (await save({ notes: text || null }, text ? 'Notas guardadas' : 'Notas borradas')) notes.value = album.notes ?? '';
+  }
+
+  function draw() {
+    const on = Boolean(album.listenedAt);
+    listenBtn.classList.toggle('on', on);
+    listenBtn.setAttribute('aria-pressed', String(on));
+    listenBtn.title = on ? 'Pulsa para marcarlo como pendiente' : '';
+    listenBtn.replaceChildren(icon(on ? 'check' : 'headphones'), on ? `Escuchado el ${listenedDate(album.listenedAt)}` : 'Marcar como escuchado');
+    dateInput.hidden = !on;
+    if (on) {
+      dateInput.value = dateInputValue(album.listenedAt);
+      dateInput.max = dateInputValue(new Date().toISOString());
+    }
+    stars.forEach((b, i) => {
+      b.classList.toggle('on', i < (album.rating ?? 0));
+      b.setAttribute('aria-pressed', String(album.rating === i + 1));
+    });
+    notesBtn.disabled = !notesDirty();
+  }
+
+  const wrap = h('div', { class: 'personal' },
+    h('div', { class: 'listen-row' }, listenBtn, dateInput),
+    h('div', { class: 'stars', role: 'group', 'aria-label': 'Valoración' }, stars),
+    h('div', { class: 'notes-block' }, notes, h('div', { class: 'notes-actions' }, notesBtn)));
+  draw();
+  return { node: wrap, flushNotes };
+}
+
 export async function albumDetails(album, ctx = {}) {
+  const original = album; // el objeto de la lista: se actualiza para que la cuadrícula lo refleje
   let collectionIds = [];
   try {
     const detail = await api(`/albums/${album.id}`);
@@ -99,6 +208,11 @@ export async function albumDetails(album, ctx = {}) {
   const current = ctx.collectionId ? collectionById(ctx.collectionId) : null;
   // Con artistId, el artista lleva a su discografía completa en Buscar.
   const artistHref = album.artistId && `#/buscar?${new URLSearchParams({ artist: album.artistId, name: album.artist })}`;
+  let touched = false;
+  const personal = personalBlock(album, ({ listenedAt, rating, notes }) => {
+    Object.assign(original, { listenedAt, rating, notes });
+    touched = true;
+  });
   const action = await openDialog((close) =>
     h('div', { class: 'album-detail' },
       dialogHeader('Álbum', close),
@@ -114,6 +228,7 @@ export async function albumDetails(album, ctx = {}) {
           h('a', { class: 'btn primary block', href: appleLink(album), ...linkTarget(album) }, icon(isBandcamp(album) ? 'external' : 'play'), `Abrir en ${serviceName(album)}`),
           isBandcamp(album) && h('p', { class: 'muted small center' }, 'Este disco no está en Apple Music: se abre su página de Bandcamp.'),
           bandcampBlock(album, close),
+          personal.node,
           h('div', { class: 'chips' },
             collectionIds.length
               ? collectionIds.map((id) => collectionById(id)).filter(Boolean).map((c) =>
@@ -126,6 +241,8 @@ export async function albumDetails(album, ctx = {}) {
             h('button', { class: 'btn danger-text', type: 'button', onclick: () => close('delete') }, icon('trash'), 'Eliminar de la biblioteca'))))),
     { className: 'album-dlg' },
   );
+  await personal.flushNotes(); // por si se cierra con Escape sin salir del cuadro de notas
+  if (touched) ctx.onAlbumChange?.(original);
 
   try {
     if (action === 'collections') {
@@ -331,7 +448,11 @@ export function collectionActions(collection) {
     title: collection.name,
     actions: [
       { label: 'Renombrar', icon: 'edit', run: () => renameCollection(collection) },
+      { label: 'Editar descripción', icon: 'note', run: () => editDescription(collection) },
       { label: 'Mover a…', icon: 'move', run: () => moveCollection(collection) },
+      { label: 'Duplicar', icon: 'copy', run: () => duplicateCollection(collection) },
+      { label: 'Exportar CSV', icon: 'download', run: () => exportCollection(collection, 'csv') },
+      { label: 'Exportar texto', icon: 'download', run: () => exportCollection(collection, 'txt') },
       { label: 'Eliminar', icon: 'trash', danger: true, run: () => deleteCollection(collection) },
     ],
   });
@@ -384,6 +505,50 @@ async function deleteFolder(folder) {
 async function renameCollection(collection) {
   const name = await promptText({ title: 'Renombrar colección', value: collection.name });
   if (name && name !== collection.name) await mutate(() => api(`/collections/${collection.id}`, { method: 'PATCH', body: { name } }));
+}
+
+async function editDescription(collection) {
+  let description;
+  try {
+    ({ collection: { description } } = await api(`/collections/${collection.id}`)); // el árbol no la trae
+  } catch (err) {
+    return showError(err);
+  }
+  const value = await openDialog((close) => {
+    const text = h('textarea', { rows: 6, maxlength: 5000, placeholder: 'De qué va esta colección', 'aria-label': 'Descripción' });
+    text.value = description ?? '';
+    setTimeout(() => text.focus(), 30);
+    return h('div', null,
+      dialogHeader(`Descripción de «${collection.name}»`, close),
+      h('form', { class: 'dlg-body', onsubmit: (e) => { e.preventDefault(); close(text.value.trim()); } },
+        text,
+        h('p', { class: 'muted small' }, 'Déjala vacía para quitarla.'),
+        h('div', { class: 'dlg-actions' },
+          h('button', { class: 'btn', type: 'button', onclick: () => close(undefined) }, 'Cancelar'),
+          h('button', { class: 'btn primary', type: 'submit' }, 'Guardar'))));
+  });
+  if (value === undefined || value === (description ?? '')) return;
+  await mutate(() => api(`/collections/${collection.id}`, { method: 'PATCH', body: { description: value || null } }),
+    value ? 'Descripción guardada' : 'Descripción quitada');
+}
+
+async function duplicateCollection(collection) {
+  try {
+    const { id } = await api(`/collections/${collection.id}/duplicate`, { method: 'POST', body: {} });
+    toast('Colección duplicada');
+    await changed();
+    location.hash = `#/c/${id}`;
+  } catch (err) {
+    showError(err);
+  }
+}
+
+// Descarga en el orden guardado de la colección (el servidor manda el nombre del archivo).
+function exportCollection(collection, format) {
+  const a = h('a', { href: `/api/collections/${collection.id}/export?format=${format}`, download: '', hidden: true });
+  document.body.append(a);
+  a.click();
+  a.remove();
 }
 
 async function moveCollection(collection) {
